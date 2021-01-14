@@ -169,7 +169,7 @@ func newStreamingProcessor(s *serverStream, pkgHandler common.PackageHandler, de
 			serializer: serilizer,
 			stream:     s,
 			pkgHandler: pkgHandler,
-			closeChain: make(chan struct{}),
+			closeChain: make(chan struct{}, 1),
 		},
 		streamDesc: desc,
 	}, nil

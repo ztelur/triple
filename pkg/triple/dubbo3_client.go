@@ -100,7 +100,7 @@ func NewTripleClient(url *dubboCommon.URL) (*TripleClient, error) {
 
 // Connect called when new TripleClient, which start a tcp conn with target addr
 func (t *TripleClient) connect(url *dubboCommon.URL) error {
-	logger.Warn("want to connect to url = ", url.Location)
+	logger.Info("want to connect to url = ", url.Location)
 	conn, err := net.Dial("tcp", url.Location)
 	if err != nil {
 		return err
@@ -120,6 +120,11 @@ func (t *TripleClient) Request(ctx context.Context, method string, arg, reply in
 	if err != nil {
 		panic("client request marshal not ok ")
 	}
+	if t.h2Controller.state != reachable { // receive goaway fm that make it unreachable
+		if err := t.connect(t.url); err != nil {
+			return err
+		}
+	}
 	if err := t.h2Controller.UnaryInvoke(ctx, method, t.conn.RemoteAddr().String(), reqData, reply, t.url); err != nil {
 		return err
 	}
@@ -128,6 +133,11 @@ func (t *TripleClient) Request(ctx context.Context, method string, arg, reply in
 
 // StreamRequest call h2Controller to send streaming request to sever, to start link.
 func (t *TripleClient) StreamRequest(ctx context.Context, method string) (grpc.ClientStream, error) {
+	if t.h2Controller.state != reachable { // receive goaway fm that make it unreachable
+		if err := t.connect(t.url); err != nil {
+			return nil, err
+		}
+	}
 	return t.h2Controller.StreamInvoke(ctx, method)
 }
 

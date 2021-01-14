@@ -18,6 +18,7 @@
 package triple
 
 import (
+	"io"
 	"net"
 	"sync"
 )
@@ -84,7 +85,7 @@ func (t *TripleServer) run() {
 					logger.Error(" handle raw conn panic = ", err)
 				}
 			}()
-			if err := t.handleRawConn(conn); err != nil {
+			if err := t.handleRawConn(conn); err != nil && err != io.EOF {
 				logger.Error(" handle raw conn err = ", err)
 			}
 		}()

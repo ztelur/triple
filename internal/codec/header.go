@@ -19,7 +19,6 @@ package codec
 
 import (
 	"context"
-	"github.com/apache/dubbo-go/common/logger"
 )
 
 import (

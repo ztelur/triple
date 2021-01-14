@@ -30,6 +30,8 @@ import (
 	"github.com/dubbogo/triple/pkg/common"
 )
 
+////////////////////////////////Buffer and MsgType
+
 // MsgType show the type of Message in buffer
 type MsgType uint8
 
@@ -72,13 +74,34 @@ func (b *MsgBuffer) get() <-chan BufferMsg {
 	return b.c
 }
 
+/////////////////////////////////stream state
+
+type streamState uint32
+
+const (
+	open      = streamState(0)
+	halfClose = streamState(1)
+	closed    = streamState(2)
+)
+
+/////////////////////////////////stream
+// stream is not only a buffer stream
+// but an abstruct stream in h2 defination
 type stream interface {
+	getStreamID() uint32
+
+	// channel usage
 	putRecv(data []byte, msgType MsgType)
 	putSend(data []byte, msgType MsgType)
 	putRecvErr(err error)
 	getSend() <-chan BufferMsg
 	getRecv() <-chan BufferMsg
 	close()
+
+	// state usage
+	getState() streamState
+	setState(ss streamState)
+	onRecvEs() streamState
 }
 
 // baseStream is the basic  impl of stream interface, it impl for basic function of stream
@@ -93,6 +116,12 @@ type baseStream struct {
 	// On client-side it is the status error received from the server.
 	// On server-side it is unused.
 	status *status.Status
+
+	state streamState
+}
+
+func (s *baseStream) getStreamID() uint32 {
+	return s.ID
 }
 
 func (s *baseStream) WriteStatus(st *status.Status) {
@@ -131,6 +160,26 @@ func (s *baseStream) getSend() <-chan BufferMsg {
 	return s.sendBuf.get()
 }
 
+func (s *baseStream) getState() streamState {
+	return s.state
+}
+
+func (s *baseStream) setState(ss streamState) {
+	logger.Debug("setState, set to close")
+	s.state = ss
+}
+
+func (s *baseStream) onRecvEs() streamState {
+	if s.state == open {
+		logger.Debug("onRecvEs, change to half Close")
+		s.state = halfClose
+	} else if s.state == halfClose {
+		logger.Debug("onRecvEs, change to closed")
+		s.state = closed
+	}
+	return s.state
+}
+
 func newBaseStream(streamID uint32, service dubboCommon.RPCService) *baseStream {
 	// stream and pkgHeader are the same level
 	return &baseStream{
@@ -138,6 +187,7 @@ func newBaseStream(streamID uint32, service dubboCommon.RPCService) *baseStream 
 		recvBuf: newRecvBuffer(),
 		sendBuf: newRecvBuffer(),
 		service: service,
+		state:   open,
 	}
 }
 
@@ -189,24 +239,41 @@ func (s *serverStream) getHeader() common.ProtocolHeader {
 	return s.header
 }
 
-func (s *serverStream) getID() uint32 {
-	return s.ID
-}
-
 // clientStream is running in client end
 type clientStream struct {
 	baseStream
+	closeChan chan struct{}
 }
 
 func newClientStream(streamID uint32) *clientStream {
 	baseStream := newBaseStream(streamID, nil)
 	newclientStream := &clientStream{
 		baseStream: *baseStream,
+		closeChan:  make(chan struct{}, 1),
 	}
 	return newclientStream
 }
 
 func (cs *clientStream) close() {
+	cs.closeChan <- struct{}{}
 	close(cs.sendBuf.c)
 	close(cs.recvBuf.c)
+}
+
+func (cs *clientStream) runSendDataToServerStream(sendChan chan interface{}) {
+	send := cs.getSend()
+	for {
+		select {
+		case <-cs.closeChan:
+			return
+		case sendMsg := <-send:
+			sendData := sendMsg.buffer.Bytes()
+			sendChan <- sendChanDataPkg{
+				streamID:  cs.ID,
+				endStream: false,
+				data:      sendData,
+			}
+		}
+
+	}
 }

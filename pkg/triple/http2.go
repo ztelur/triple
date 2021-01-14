@@ -21,6 +21,8 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"github.com/dubbogo/triple/internal/codes"
+	"github.com/dubbogo/triple/internal/status"
 	"io"
 	"net"
 	"strconv"
@@ -47,6 +49,14 @@ import (
 	"github.com/dubbogo/triple/pkg/common"
 )
 
+type h2Configure struct {
+	MaxActiveStream uint32
+}
+
+var defaultH2Configure = h2Configure{
+	MaxActiveStream: 100,
+}
+
 // H2Controller is an important object of h2 protocol
 // it can be used as serverEnd and clientEnd, identified by isServer field
 // it can shake hand by client or server end, to start triple transfer
@@ -54,6 +64,7 @@ import (
 // it maintains streamMap, with can contain have many higher layer object: stream, used by event driven.
 // it maintains the data stream from lower layer's net/h2frame to higher layer's stream/userStream
 type H2Controller struct {
+	config    *h2Configure
 	conn      net.Conn
 	rawFramer *h2.Framer
 	isServer  bool
@@ -70,12 +81,21 @@ type H2Controller struct {
 
 	sendChan         chan interface{}
 	tripleHeaderFlag bool
+	// state shows conn state, after receiving go away frame, state will be set to draining
+	// so as not to receive request from dubbo3 client, and client will new an other conn to replace
+	state H2ControllerState
 }
 
 type sendChanDataPkg struct {
 	data      []byte
 	endStream bool
 	streamID  uint32
+}
+
+type sendChanGoAwayPkg struct {
+	maxSteamID uint32
+	code       h2.ErrCode
+	debugData  []byte
 }
 
 // Dubbo3GrpcService is gRPC service, used to check impl
@@ -129,6 +149,7 @@ func NewH2Controller(conn net.Conn, isServer bool, service dubboCommon.RPCServic
 	}
 
 	h2c := &H2Controller{
+		config:           &defaultH2Configure,
 		rawFramer:        fm,
 		conn:             conn,
 		url:              url,
@@ -142,6 +163,7 @@ func NewH2Controller(conn net.Conn, isServer bool, service dubboCommon.RPCServic
 		sendChan:         make(chan interface{}, 16),
 		streamID:         int32(-1),
 		tripleHeaderFlag: false,
+		state:            reachable,
 	}
 	return h2c, nil
 }
@@ -180,6 +202,9 @@ func (h *H2Controller) H2ShakeHand() error {
 		// Check the validity of client preface.
 		preface := make([]byte, len(h2.ClientPreface))
 		if _, err := io.ReadFull(h.conn, preface); err != nil {
+			if err == io.EOF {
+				return err
+			}
 			logger.Error("server read preface err = ", err)
 			return err
 		}
@@ -250,9 +275,19 @@ func (h *H2Controller) H2ShakeHand() error {
 	return nil
 }
 
+func (h *H2Controller) getActiveMapLen() int {
+	count := 0
+	h.streamMap.Range(func(key, value interface{}) bool {
+		count++
+		return true
+	})
+	return count
+}
+
 // runSendUnaryRsp start a rsp loop,  called when server response unary rpc
 func (h *H2Controller) runSendUnaryRsp(stream *serverStream) {
 	sendChan := stream.getSend()
+	id := stream.getStreamID()
 	handler, err := common.GetProtocolHeaderHandler(h.url.Protocol)
 	if err != nil {
 		logger.Errorf("Protocol Header Handler not registered: %s", h.url.Protocol)
@@ -276,11 +311,12 @@ func (h *H2Controller) runSendUnaryRsp(stream *serverStream) {
 			}
 			hfData := buf.Next(buf.Len())
 			h.sendChan <- h2.HeadersFrameParam{
-				StreamID:      stream.getID(),
+				StreamID:      id,
 				EndHeaders:    true,
 				BlockFragment: hfData,
 				EndStream:     true,
 			}
+			h.onEndStreamRecvOrSend(stream)
 			return
 		}
 
@@ -302,16 +338,16 @@ func (h *H2Controller) runSendUnaryRsp(stream *serverStream) {
 		hflen := buf.Len()
 		hfData := buf.Next(hflen)
 
-		logger.Debug("server send stream id = ", stream.getID())
+		logger.Debug("server send stream id = ", id)
 
 		h.sendChan <- h2.HeadersFrameParam{
-			StreamID:      stream.getID(),
+			StreamID:      id,
 			EndHeaders:    true,
 			BlockFragment: hfData,
 			EndStream:     false,
 		}
 		h.sendChan <- sendChanDataPkg{
-			streamID:  stream.getID(),
+			streamID:  id,
 			endStream: false,
 			data:      sendData,
 		}
@@ -329,11 +365,12 @@ func (h *H2Controller) runSendUnaryRsp(stream *serverStream) {
 		}
 		hfData2 := buf2.Next(buf2.Len())
 		h.sendChan <- h2.HeadersFrameParam{
-			StreamID:      stream.getID(),
+			StreamID:      id,
 			EndHeaders:    true,
 			BlockFragment: hfData2,
 			EndStream:     true,
 		}
+		h.onEndStreamRecvOrSend(stream)
 		break
 	}
 }
@@ -342,6 +379,7 @@ func (h *H2Controller) runSendUnaryRsp(stream *serverStream) {
 func (h *H2Controller) runSendStreamRsp(stream *serverStream) {
 	sendChan := stream.getSend()
 	headerWrited := false
+	id := stream.getStreamID()
 	handler, err := common.GetProtocolHeaderHandler(h.url.Protocol)
 	if err != nil {
 		logger.Errorf("Protocol Header Handler not registered: %s", h.url.Protocol)
@@ -367,10 +405,17 @@ func (h *H2Controller) runSendStreamRsp(stream *serverStream) {
 			}
 			hfData := buf.Next(buf.Len())
 			h.sendChan <- h2.HeadersFrameParam{
-				StreamID:      stream.getID(),
+				StreamID:      id,
 				EndHeaders:    true,
 				BlockFragment: hfData,
 				EndStream:     true,
+			}
+			h.handleResetStream(id)
+			h.sendChan <- h2.RSTStreamFrame{
+				FrameHeader: h2.FrameHeader{
+					StreamID: id,
+				},
+				ErrCode: h2.ErrCodeNo,
 			}
 			return
 		}
@@ -380,7 +425,7 @@ func (h *H2Controller) runSendStreamRsp(stream *serverStream) {
 			headerFields := make([]hpack.HeaderField, 0, 2) // at least :status, content-type will be there if none else.
 			headerFields = append(headerFields, hpack.HeaderField{Name: ":status", Value: "200"})
 			headerFields = append(headerFields, hpack.HeaderField{Name: "content-type", Value: "application/grpc"})
-			if h.tripleHeaderFlag{
+			if h.tripleHeaderFlag {
 				headerFields = handler.WriteHeaderField(&dubboCommon.URL{}, context.Background(), headerFields)
 			}
 
@@ -394,11 +439,11 @@ func (h *H2Controller) runSendStreamRsp(stream *serverStream) {
 			hflen := buf.Len()
 			hfData := buf.Next(hflen)
 
-			logger.Debug("server send stream id = ", stream.getID())
+			logger.Debug("server send stream id = ", id)
 
 			// todo need serilization
 			h.sendChan <- h2.HeadersFrameParam{
-				StreamID:      stream.getID(),
+				StreamID:      id,
 				EndHeaders:    true,
 				BlockFragment: hfData,
 				EndStream:     false,
@@ -407,10 +452,25 @@ func (h *H2Controller) runSendStreamRsp(stream *serverStream) {
 		}
 
 		h.sendChan <- sendChanDataPkg{
-			streamID:  stream.getID(),
+			streamID:  id,
 			endStream: false,
 			data:      sendData,
 		}
+	}
+}
+
+func (h *H2Controller) handleDataFrame(fm *h2.DataFrame) {
+	id := fm.StreamID
+	logger.Debug("DataFrame = ", fm.String(), "id = ", id)
+	data := make([]byte, len(fm.Data()))
+	copy(data, fm.Data())
+	val, ok := h.streamMap.Load(id)
+	if !ok {
+		return
+	}
+	val.(stream).putRecv(data, DataMsgType)
+	if fm.Flags.Has(h2.FlagDataEndStream) {
+		h.onEndStreamRecvOrSend(val.(stream))
 	}
 }
 
@@ -418,67 +478,115 @@ func (h *H2Controller) clientRunRecv() {
 	for {
 		fm, err := h.rawFramer.ReadFrame()
 		if err != nil {
-			if err != io.EOF {
+			if err.Error() != "EOF" {
 				logger.Info("read frame error = ", err)
 			}
 			continue
 		}
 		switch fm := fm.(type) {
 		case *h2.MetaHeadersFrame:
-
-			h.operateHeaders(fm)
-
+			h.ifStreamWillStillAndOperate(fm)
 		case *h2.DataFrame:
-			id := fm.StreamID
-			logger.Debug("DataFrame = ", fm.String(), "id = ", id)
-			data := make([]byte, len(fm.Data()))
-			copy(data, fm.Data())
-			val, ok := h.streamMap.Load(id)
-			if !ok {
-				continue
-			}
-			val.(stream).putRecv(data, DataMsgType)
+			h.handleDataFrame(fm)
 		case *h2.RSTStreamFrame:
+			h.handleResetStream(fm.StreamID)
 		case *h2.SettingsFrame:
 		case *h2.PingFrame:
+			h.handlePingFrame(fm)
 		case *h2.WindowUpdateFrame:
 		case *h2.GoAwayFrame:
-			// TODO: Handle GoAway from the client appropriately.
+			logger.Debug("GoAwayFrame recv!")
+			h.handleGoAway(fm)
 		default:
 		}
 	}
 }
 
-func (h *H2Controller) operateHeaders(fm *h2.MetaHeadersFrame) {
-
-	id := fm.StreamID
-	logger.Debug("MetaHeader frame = ", fm.String(), "id = ", id)
-
-	val, ok := h.streamMap.Load(id)
-
-	if !ok {
-		logger.Errorf("operateHeaders not get stream")
+// handlePingFrame handle ping frame
+func (h *H2Controller) handlePingFrame(fm *h2.PingFrame) {
+	if fm.Flags.Has(h2.FlagPingAck) {
+		logger.Debug("handle ping frame ACK")
 		return
+	}
+	logger.Debug("handle ping frame")
+	h.sendChan <- h2.PingFrame{
+		FrameHeader: h2.FrameHeader{
+			Flags: h2.FlagPingAck,
+		},
+	}
+}
+
+// handleResetStream close stream directly
+func (h *H2Controller) handleResetStream(streamID uint32) {
+	logger.Debug("handleResetStream with id = ", streamID)
+	if s, ok := h.streamMap.Load(streamID); ok {
+		s.(stream).close()
+		s.(stream).setState(closed)
+		h.streamMap.Delete(streamID)
+	}
+}
+
+// handleGoAway receive goaway fm
+// go away is a conn level frame, which would close all unhandle stream and set conn state draining
+func (h *H2Controller) handleGoAway(fm *h2.GoAwayFrame) {
+	id := fm.LastStreamID
+	logger.Debug("goaway : lastStreamID = ", id)
+	if id > 0 && id%2 != 1 {
+		h.close()
+		return
+	}
+	streamIDToClose := make([]uint32, 0)
+	h.streamMap.Range(func(key, value interface{}) bool {
+		if key.(uint32) > id {
+			value.(stream).close()
+			streamIDToClose = append(streamIDToClose, key.(uint32))
+		}
+		return true
+	})
+	for _, v := range streamIDToClose {
+		h.streamMap.Delete(v)
+	}
+	h.state = draining
+}
+
+func (h *H2Controller) onEndStreamRecvOrSend(s stream) {
+	if tempStreamState := s.onRecvEs(); tempStreamState == closed {
+		// stream after receive ES flag, change to close means it is really close
+		h.streamMap.Delete(s.getStreamID())
+	}
+}
+
+// ifStreamWillStillAndOperate read status of grpc and close stream if need
+// ifStreamWillStillAndOperate deal with end stream flag in H2 header
+// if stream would close, return false
+func (h *H2Controller) ifStreamWillStillAndOperate(fm *h2.MetaHeadersFrame) bool {
+	id := fm.StreamID
+	val, ok := h.streamMap.Load(id)
+	if !ok {
+		logger.Debug("operateHeaders not get stream in h2 controller")
+		return true
 	}
 
 	s := val.(stream)
-
 	state := &decodeState{}
 	state.data.isGRPC = true
 
 	for _, hf := range fm.Fields {
 		state.processHeaderField(hf)
 	}
-	if state.data.rawStatusCode != nil {
+	if state.data.rawStatusCode != nil && *state.data.rawStatusCode != 0 {
 		s.putRecvErr(state.status().Err())
+		return false
 	}
 
 	if fm.Flags.Has(h2.FlagDataEndStream) {
-		// todo graceful close
-		h.streamMap.Delete(id)
+		h.onEndStreamRecvOrSend(s)
+		return false
 	}
-
+	return true
 }
+
+//func (h*H2Controller) if
 
 // serverRun start a loop, server start listening h2 metaheader
 func (h *H2Controller) serverRunRecv() {
@@ -492,24 +600,26 @@ func (h *H2Controller) serverRunRecv() {
 		}
 		switch fm := fm.(type) {
 		case *h2.MetaHeadersFrame:
-			logger.Debug("MetaHeader frame = ", fm.String(), "id = ", fm.StreamID)
-			header := h.handler.ReadFromH2MetaHeader(fm)
-			h.addServerStream(header)
-		case *h2.DataFrame:
-			logger.Debug("DataFrame = ", fm.String(), "id = ", fm.StreamID)
-			data := make([]byte, len(fm.Data()))
-			copy(data, fm.Data())
-			val, ok := h.streamMap.Load(fm.StreamID)
-			if !ok {
+			if ok := h.ifStreamWillStillAndOperate(fm); !ok { // stream would be close
 				continue
 			}
-			val.(stream).putRecv(data, DataMsgType)
+			logger.Debug("MetaHeader frame = ", fm.String(), "id = ", fm.StreamID)
+			header := h.handler.ReadFromH2MetaHeader(fm)
+			if err := h.addServerStream(header); err != nil {
+				logger.Errorf("add server stream err %+v", err)
+			}
+		case *h2.DataFrame:
+			h.handleDataFrame(fm)
 		case *h2.RSTStreamFrame:
+			h.handleResetStream(fm.StreamID)
 		case *h2.SettingsFrame:
 		case *h2.PingFrame:
+			h.handlePingFrame(fm)
 		case *h2.WindowUpdateFrame:
 		case *h2.GoAwayFrame:
 			// TODO: Handle GoAway from the client appropriately.
+			// now it's useless for client to send go away frame to server
+		//case *h2.:
 		default:
 		}
 	}
@@ -541,6 +651,15 @@ func (h *H2Controller) addServerStream(data common.ProtocolHeader) error {
 		go h.runSendStreamRsp(newstm)
 	}
 	h.streamMap.Store(newstm.ID, newstm)
+	if h.getActiveMapLen() >= int(h.config.MaxActiveStream) {
+		h.state = draining
+		h.sendChan <- sendChanGoAwayPkg{
+			maxSteamID: uint32(h.streamID),
+			code:       h2.ErrCodeNo,
+			debugData:  make([]byte, 0),
+		}
+		return nil
+	}
 	return nil
 }
 
@@ -556,6 +675,18 @@ func (h *H2Controller) runSend() {
 		case sendChanDataPkg:
 			if err := h.rawFramer.WriteData(toSend.streamID, toSend.endStream, toSend.data); err != nil {
 				logger.Errorf("rawFramer writeData err = ", err)
+			}
+		case sendChanGoAwayPkg:
+			if err := h.rawFramer.WriteGoAway(toSend.maxSteamID, toSend.code, toSend.debugData); err != nil {
+				logger.Errorf("rawFramer writeGoAway err = ", err)
+			}
+		case h2.RSTStreamFrame:
+			if err := h.rawFramer.WriteRSTStream(toSend.StreamID, toSend.ErrCode); err != nil {
+				logger.Errorf("rawFramer WriteRSTStream err = ", err)
+			}
+		case h2.PingFrame:
+			if err := h.rawFramer.WritePing(toSend.IsAck(), toSend.Data); err != nil {
+				logger.Errorf("rawFramer WriteRSTStream err = ", err)
 			}
 
 		default:
@@ -578,7 +709,7 @@ func (h *H2Controller) StreamInvoke(ctx context.Context, method string) (grpc.Cl
 		if err := enc.WriteField(f); err != nil {
 			logger.Error("error: enc.WriteField err = ", err)
 		} else {
-			logger.Debug("encode field f = ", f.Name, " ", f.Value, " success")
+			//logger.Debug("encode field f = ", f.Name, " ", f.Value, " success")
 		}
 	}
 	hflen := buf.Len()
@@ -599,23 +730,9 @@ func (h *H2Controller) StreamInvoke(ctx context.Context, method string) (grpc.Cl
 		return nil, err
 	}
 	h.streamMap.Store(clientStream.ID, clientStream)
-	go h.runSendReq(clientStream)
+	go clientStream.runSendDataToServerStream(h.sendChan)
 	pkgHandler, err := common.GetPackagerHandler(h.url.Protocol)
 	return newClientUserStream(clientStream, serilizer, pkgHandler), nil
-}
-
-// runSendReq called when client stream invoke, it maintain user's streaming data send to server
-func (h *H2Controller) runSendReq(stream *clientStream) error {
-	sendChan := stream.getSend()
-	for {
-		sendMsg := <-sendChan
-		sendData := sendMsg.buffer.Bytes()
-		h.sendChan <- sendChanDataPkg{
-			streamID:  stream.ID,
-			endStream: false,
-			data:      sendData,
-		}
-	}
 }
 
 // UnaryInvoke can start unary invocation, called by dubbo3 client
@@ -642,7 +759,7 @@ func (h *H2Controller) UnaryInvoke(ctx context.Context, method string, addr stri
 		if err := enc.WriteField(f); err != nil {
 			logger.Error("error: enc.WriteField err = ", err)
 		} else {
-			logger.Debug("encode field f = ", f.Name, " ", f.Value, " success")
+			//logger.Debug("encode field f = ", f.Name, " ", f.Value, " success")
 		}
 	}
 	hflen := buf.Len()
@@ -662,6 +779,7 @@ func (h *H2Controller) UnaryInvoke(ctx context.Context, method string, addr stri
 		endStream: true,
 		data:      h.pkgHandler.Pkg2FrameData(data),
 	}
+	h.onEndStreamRecvOrSend(clientStream)
 
 	// 3. recv rsp
 	recvChan := clientStream.getRecv()
@@ -671,10 +789,16 @@ func (h *H2Controller) UnaryInvoke(ctx context.Context, method string, addr stri
 		return toRPCErr(recvData.err)
 	}
 
+	// recv chan was closed
+	if recvData.buffer == nil {
+		return status.Err(codes.Canceled, "conn reset by peers")
+	}
+
 	if err := proto.Unmarshal(h.pkgHandler.Frame2PkgData(recvData.buffer.Bytes()), reply.(proto.Message)); err != nil {
-		logger.Error("client unmarshal rsp ", err)
+		logger.Error("client unmarshal rsp err:", err)
 		return err
 	}
+
 	return nil
 }
 
@@ -683,4 +807,5 @@ func (h2 *H2Controller) close() {
 		v.(stream).close()
 		return true
 	})
+	h2.state = closing
 }
