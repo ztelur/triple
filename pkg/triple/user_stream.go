@@ -60,7 +60,7 @@ func (ss *baseUserStream) SendMsg(m interface{}) error {
 func (ss *baseUserStream) RecvMsg(m interface{}) error {
 	recvChan := ss.stream.getRecv()
 	readBuf := <-recvChan
-	pkgData := ss.pkgHandler.Frame2PkgData(readBuf.buffer.Bytes())
+	pkgData, _ := ss.pkgHandler.Frame2PkgData(readBuf.buffer.Bytes())
 	if err := ss.serilizer.Unmarshal(pkgData, m); err != nil {
 		return err
 	}

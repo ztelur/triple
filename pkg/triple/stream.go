@@ -96,7 +96,9 @@ type stream interface {
 	putRecvErr(err error)
 	getSend() <-chan BufferMsg
 	getRecv() <-chan BufferMsg
+	putSplitedDataRecv(splitedData []byte, msgType MsgType, handler common.PackageHandler)
 	close()
+	closeWithError(err error)
 
 	// state usage
 	getState() streamState
@@ -112,6 +114,14 @@ type baseStream struct {
 	url     *dubboCommon.URL
 	header  common.ProtocolHeader
 	service dubboCommon.RPCService
+	// splitBuffer is used to cache splited data from network, if exceed
+	splitBuffer BufferMsg
+	// fromFrameHeaderDataSize is got from dataFrame's header, which is 5 bytes and contains the total data size
+	// of this package
+	// when fromFrameHeaderDataSize is zero, its means we should parse header first 5byte, and then read data
+	fromFrameHeaderDataSize uint32
+
+	facadeStream stream
 
 	// On client-side it is the status error received from the server.
 	// On server-side it is unused.
@@ -145,6 +155,35 @@ func (s *baseStream) putRecvErr(err error) {
 	})
 }
 
+// putSplitedDataRecv is called when receive from tripleNetwork, dealing with big package partial to create the whole pkg
+// @msgType Must be data
+func (s *baseStream) putSplitedDataRecv(splitedData []byte, msgType MsgType, frameHandler common.PackageHandler) {
+	if msgType != DataMsgType {
+		return
+	}
+	if s.fromFrameHeaderDataSize == 0 {
+		// should parse data frame header first
+		var totalSize uint32
+		if splitedData, totalSize = frameHandler.Frame2PkgData(splitedData); totalSize == 0 {
+			return
+		} else {
+			s.fromFrameHeaderDataSize = totalSize
+		}
+		s.splitBuffer.buffer.Reset()
+	}
+	s.splitBuffer.buffer.Write(splitedData)
+	if s.splitBuffer.buffer.Len() > int(s.fromFrameHeaderDataSize) {
+		panic("Receive Splited Data is bigger than wanted!!!")
+		return
+	}
+
+	if s.splitBuffer.buffer.Len() == int(s.fromFrameHeaderDataSize) {
+		s.putRecv(frameHandler.Pkg2FrameData(s.splitBuffer.buffer.Bytes()), msgType)
+		s.splitBuffer.buffer.Reset()
+		s.fromFrameHeaderDataSize = 0
+	}
+}
+
 func (s *baseStream) putSend(data []byte, msgType MsgType) {
 	s.sendBuf.put(BufferMsg{
 		buffer:  bytes.NewBuffer(data),
@@ -152,6 +191,16 @@ func (s *baseStream) putSend(data []byte, msgType MsgType) {
 	})
 }
 
+// getRecv get channel of receiving message
+// in server end, when unary call, msg from client is send to recvChan, and then it is read and push to processor to get response.
+// in client end, when unary call, msg from server is send to recvChan, and then response in invoke method.
+/*
+client  ---> send chan ---> triple ---> recv Chan ---> processor
+			sendBuf						recvBuf			   |
+		|	clientStream |          | serverStream |       |
+			recvBuf						sendBuf			   V
+client <--- recv chan <--- triple <--- send chan <---  response
+*/
 func (s *baseStream) getRecv() <-chan BufferMsg {
 	return s.recvBuf.get()
 }
@@ -180,6 +229,11 @@ func (s *baseStream) onRecvEs() streamState {
 	return s.state
 }
 
+func (s *baseStream) closeWithError(err error) {
+	s.putRecvErr(err)
+	s.facadeStream.close()
+}
+
 func newBaseStream(streamID uint32, service dubboCommon.RPCService) *baseStream {
 	// stream and pkgHeader are the same level
 	return &baseStream{
@@ -188,6 +242,9 @@ func newBaseStream(streamID uint32, service dubboCommon.RPCService) *baseStream 
 		sendBuf: newRecvBuffer(),
 		service: service,
 		state:   open,
+		splitBuffer: BufferMsg{
+			buffer: bytes.NewBuffer(make([]byte, 0)),
+		},
 	}
 }
 
@@ -211,6 +268,7 @@ func newServerStream(header common.ProtocolHeader, desc interface{}, url *dubboC
 		baseStream: *baseStream,
 		header:     header,
 	}
+	serverStream.baseStream.facadeStream = serverStream
 	pkgHandler, err := common.GetPackagerHandler(url.Protocol)
 	if err != nil {
 		logger.Error("GetPkgHandler error with err = ", err)
@@ -251,6 +309,7 @@ func newClientStream(streamID uint32) *clientStream {
 		baseStream: *baseStream,
 		closeChan:  make(chan struct{}, 1),
 	}
+	newclientStream.baseStream.facadeStream = newclientStream
 	return newclientStream
 }
 
@@ -260,7 +319,7 @@ func (cs *clientStream) close() {
 	close(cs.recvBuf.c)
 }
 
-func (cs *clientStream) runSendDataToServerStream(sendChan chan interface{}) {
+func (cs *clientStream) runSendDataToServerStream(f func(streamID uint32, endStream bool, data []byte)) {
 	send := cs.getSend()
 	for {
 		select {
@@ -268,11 +327,7 @@ func (cs *clientStream) runSendDataToServerStream(sendChan chan interface{}) {
 			return
 		case sendMsg := <-send:
 			sendData := sendMsg.buffer.Bytes()
-			sendChan <- sendChanDataPkg{
-				streamID:  cs.ID,
-				endStream: false,
-				data:      sendData,
-			}
+			f(cs.ID, false, sendData)
 		}
 
 	}

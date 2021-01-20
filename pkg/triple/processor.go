@@ -91,7 +91,7 @@ func newUnaryProcessor(s *serverStream, pkgHandler common.PackageHandler, desc g
 func (p *unaryProcessor) processUnaryRPC(buf bytes.Buffer, service dubboCommon.RPCService, header common.ProtocolHeader) ([]byte, error) {
 	readBuf := buf.Bytes()
 
-	pkgData := p.pkgHandler.Frame2PkgData(readBuf)
+	pkgData, _ := p.pkgHandler.Frame2PkgData(readBuf)
 
 	descFunc := func(v interface{}) error {
 		if err := p.serializer.Unmarshal(pkgData, v.(proto.Message)); err != nil {

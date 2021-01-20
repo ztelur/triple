@@ -60,7 +60,7 @@ func SetProtocolHeaderHandler(protocol string, factory ProtocolHeaderHandlerFact
 
 // PackageHandler
 type PackageHandler interface {
-	Frame2PkgData(frameData []byte) []byte
+	Frame2PkgData(frameData []byte) ([]byte, uint32)
 	Pkg2FrameData(pkgData []byte) []byte
 }
 

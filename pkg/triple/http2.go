@@ -23,12 +23,13 @@ import (
 	"fmt"
 	"github.com/dubbogo/triple/internal/codes"
 	"github.com/dubbogo/triple/internal/status"
+	"go.uber.org/atomic"
 	"io"
+	"math"
 	"net"
 	"strconv"
 	"strings"
 	"sync"
-	"sync/atomic"
 )
 
 import (
@@ -49,14 +50,6 @@ import (
 	"github.com/dubbogo/triple/pkg/common"
 )
 
-type h2Configure struct {
-	MaxActiveStream uint32
-}
-
-var defaultH2Configure = h2Configure{
-	MaxActiveStream: 100,
-}
-
 // H2Controller is an important object of h2 protocol
 // it can be used as serverEnd and clientEnd, identified by isServer field
 // it can shake hand by client or server end, to start triple transfer
@@ -64,12 +57,11 @@ var defaultH2Configure = h2Configure{
 // it maintains streamMap, with can contain have many higher layer object: stream, used by event driven.
 // it maintains the data stream from lower layer's net/h2frame to higher layer's stream/userStream
 type H2Controller struct {
-	config    *h2Configure
 	conn      net.Conn
 	rawFramer *h2.Framer
 	isServer  bool
 
-	streamID int32
+	streamID atomic.Uint32
 	//streamMap  map[uint32]stream
 	streamMap  sync.Map
 	mdMap      map[string]grpc.MethodDesc
@@ -83,7 +75,13 @@ type H2Controller struct {
 	tripleHeaderFlag bool
 	// state shows conn state, after receiving go away frame, state will be set to draining
 	// so as not to receive request from dubbo3 client, and client will new an other conn to replace
-	state H2ControllerState
+	state            H2ControllerState
+	maxCurrentStream atomic.Uint32
+	// blockStreamChan store the ok chan for every blocked stream, when exceed maxCurrentStream
+	blockStreamChan    []chan struct{}
+	blockChanListMutex sync.Mutex
+
+	maxFrameSize atomic.Uint32
 }
 
 type sendChanDataPkg struct {
@@ -139,6 +137,7 @@ func NewH2Controller(conn net.Conn, isServer bool, service dubboCommon.RPCServic
 	}
 
 	fm := h2.NewFramer(conn, conn)
+	fm.SetMaxReadFrameSize(defaultMaxFrameSize)
 	fm.ReadMetaHeaders = hpack.NewDecoder(4096, nil)
 	var headerHandler common.ProtocolHeaderHandler
 	var pkgHandler common.PackageHandler
@@ -147,9 +146,14 @@ func NewH2Controller(conn net.Conn, isServer bool, service dubboCommon.RPCServic
 		headerHandler, _ = common.GetProtocolHeaderHandler(url.Protocol)
 		pkgHandler, _ = common.GetPackagerHandler(url.Protocol)
 	}
+	initStreamID := atomic.Uint32{}
+	initStreamID.Store(math.MaxUint32)
+	defaultMaxCurrentStream := atomic.Uint32{}
+	defaultMaxCurrentStream.Store(math.MaxUint32)
 
+	maxFrameSize := atomic.Uint32{}
+	maxFrameSize.Store(defaultMaxFrameSize)
 	h2c := &H2Controller{
-		config:           &defaultH2Configure,
 		rawFramer:        fm,
 		conn:             conn,
 		url:              url,
@@ -161,9 +165,12 @@ func NewH2Controller(conn net.Conn, isServer bool, service dubboCommon.RPCServic
 		handler:          headerHandler,
 		pkgHandler:       pkgHandler,
 		sendChan:         make(chan interface{}, 16),
-		streamID:         int32(-1),
+		streamID:         initStreamID,
 		tripleHeaderFlag: false,
 		state:            reachable,
+		maxCurrentStream: defaultMaxCurrentStream,
+		blockStreamChan:  make([]chan struct{}, 0),
+		maxFrameSize:     maxFrameSize,
 	}
 	return h2c, nil
 }
@@ -189,7 +196,7 @@ func (h *H2Controller) H2ShakeHand() error {
 	// todo default setting
 	settings := []h2.Setting{{
 		ID:  0x5,
-		Val: 16384,
+		Val: defaultMaxFrameSize,
 	}}
 
 	if h.isServer { // server
@@ -230,6 +237,7 @@ func (h *H2Controller) H2ShakeHand() error {
 		}
 		if setting.NumSettings() != 0 {
 			h.tripleHeaderFlag = isTripleFlagSetting(setting.Setting(0))
+			h.handleSettingFrame(setting)
 		}
 
 		if err := h.rawFramer.WriteSettingsAck(); err != nil {
@@ -259,10 +267,13 @@ func (h *H2Controller) H2ShakeHand() error {
 			logger.Error("client read setting err = ", err)
 			return err
 		}
-		_, ok := frame.(*h2.SettingsFrame)
+		settingFrames, ok := frame.(*h2.SettingsFrame)
 		if !ok {
 			logger.Error("client read frame not setting frame type")
 			return perrors.Errorf("client read frame not setting frame type")
+		}
+		if settingFrames.NumSettings() > 0 {
+			h.handleSettingFrame(settingFrames)
 		}
 	}
 	// after shake hand, start send and receive listening
@@ -275,8 +286,8 @@ func (h *H2Controller) H2ShakeHand() error {
 	return nil
 }
 
-func (h *H2Controller) getActiveMapLen() int {
-	count := 0
+func (h *H2Controller) getActiveMapLen() uint32 {
+	count := uint32(0)
 	h.streamMap.Range(func(key, value interface{}) bool {
 		count++
 		return true
@@ -346,11 +357,7 @@ func (h *H2Controller) runSendUnaryRsp(stream *serverStream) {
 			BlockFragment: hfData,
 			EndStream:     false,
 		}
-		h.sendChan <- sendChanDataPkg{
-			streamID:  id,
-			endStream: false,
-			data:      sendData,
-		}
+		h.sendGeneralDataFrame(id, false, sendData)
 
 		var buf2 bytes.Buffer
 		// end unary rpc with status
@@ -410,7 +417,7 @@ func (h *H2Controller) runSendStreamRsp(stream *serverStream) {
 				BlockFragment: hfData,
 				EndStream:     true,
 			}
-			h.handleResetStream(id)
+			h.resetStream(id, h2.ErrCodeNo)
 			h.sendChan <- h2.RSTStreamFrame{
 				FrameHeader: h2.FrameHeader{
 					StreamID: id,
@@ -450,27 +457,36 @@ func (h *H2Controller) runSendStreamRsp(stream *serverStream) {
 			}
 			headerWrited = true
 		}
-
-		h.sendChan <- sendChanDataPkg{
-			streamID:  id,
-			endStream: false,
-			data:      sendData,
-		}
+		h.sendGeneralDataFrame(id, false, sendData)
 	}
 }
 
 func (h *H2Controller) handleDataFrame(fm *h2.DataFrame) {
 	id := fm.StreamID
 	logger.Debug("DataFrame = ", fm.String(), "id = ", id)
+	if id == 0 {
+		logger.Error("ID == 0, send goaway with errorcode = Protocol")
+		h.sendGoAwayWithErrorCode(h2.ErrCodeProtocol)
+		return
+	}
 	data := make([]byte, len(fm.Data()))
 	copy(data, fm.Data())
 	val, ok := h.streamMap.Load(id)
 	if !ok {
+		logger.Error("streamID = ", id, " not exist, send goaway with errorcode = StreamClosed")
+		h.sendGoAwayWithErrorCode(h2.ErrCodeStreamClosed)
 		return
 	}
-	val.(stream).putRecv(data, DataMsgType)
+	val.(stream).putSplitedDataRecv(data, DataMsgType, h.pkgHandler)
 	if fm.Flags.Has(h2.FlagDataEndStream) {
 		h.onEndStreamRecvOrSend(val.(stream))
+	}
+}
+
+func (h *H2Controller) sendGoAwayWithErrorCode(errCode h2.ErrCode) {
+	h.sendChan <- sendChanGoAwayPkg{
+		maxSteamID: h.maxCurrentStream.Load(),
+		code:       errCode,
 	}
 }
 
@@ -489,13 +505,14 @@ func (h *H2Controller) clientRunRecv() {
 		case *h2.DataFrame:
 			h.handleDataFrame(fm)
 		case *h2.RSTStreamFrame:
-			h.handleResetStream(fm.StreamID)
+			h.handleResetStreamFrame(fm)
 		case *h2.SettingsFrame:
+			h.handleSettingFrame(fm)
 		case *h2.PingFrame:
 			h.handlePingFrame(fm)
 		case *h2.WindowUpdateFrame:
 		case *h2.GoAwayFrame:
-			logger.Debug("GoAwayFrame recv!")
+			logger.Info("GoAwayFrame recv!")
 			h.handleGoAway(fm)
 		default:
 		}
@@ -517,12 +534,49 @@ func (h *H2Controller) handlePingFrame(fm *h2.PingFrame) {
 }
 
 // handleResetStream close stream directly
-func (h *H2Controller) handleResetStream(streamID uint32) {
-	logger.Debug("handleResetStream with id = ", streamID)
-	if s, ok := h.streamMap.Load(streamID); ok {
-		s.(stream).close()
+func (h *H2Controller) handleResetStreamFrame(fm *h2.RSTStreamFrame) {
+	h.resetStream(fm.StreamID, fm.ErrCode)
+}
+
+func (h *H2Controller) refreshBlockingStream() {
+	logger.Debug("refreshing blocking stream")
+	h.blockChanListMutex.Lock()
+	defer h.blockChanListMutex.Unlock()
+	blockChanLen := len(h.blockStreamChan)
+	if blockChanLen > 0 { // need refresh
+		canBeReleaseNum := h.maxCurrentStream.Load() - h.getActiveMapLen()
+		if canBeReleaseNum > 0 { // can release some chan
+			refreshNum := 0
+			if blockChanLen <= int(canBeReleaseNum) {
+				// release all
+				for _, v := range h.blockStreamChan {
+					v <- struct{}{}
+					refreshNum++
+				}
+			} else {
+				//blockChanLen > can release num
+				for k, v := range h.blockStreamChan {
+					if k < int(canBeReleaseNum) {
+						v <- struct{}{}
+						refreshNum++
+					} else {
+						break
+					}
+				}
+				h.blockStreamChan = h.blockStreamChan[canBeReleaseNum:]
+			}
+			logger.Debug("refresh num = ", refreshNum)
+		}
+	}
+}
+
+func (h *H2Controller) resetStream(id uint32, err h2.ErrCode) {
+	logger.Debug("handleResetStream with id = ", id)
+	if s, ok := h.streamMap.Load(id); ok {
+		s.(stream).closeWithError(status.Err(codes.Internal, fmt.Sprintf("stream terminated by RST_STREAM with error code: %v", err)))
 		s.(stream).setState(closed)
-		h.streamMap.Delete(streamID)
+		h.streamMap.Delete(id)
+		go h.refreshBlockingStream()
 	}
 }
 
@@ -546,13 +600,18 @@ func (h *H2Controller) handleGoAway(fm *h2.GoAwayFrame) {
 	for _, v := range streamIDToClose {
 		h.streamMap.Delete(v)
 	}
+	go h.refreshBlockingStream()
 	h.state = draining
 }
 
+// is called when send or recv EndStream flag, whether header frame or data frame
+// this function can change status of stream, and automatic delete\close\refreshif necessary
 func (h *H2Controller) onEndStreamRecvOrSend(s stream) {
 	if tempStreamState := s.onRecvEs(); tempStreamState == closed {
 		// stream after receive ES flag, change to close means it is really close
 		h.streamMap.Delete(s.getStreamID())
+		s.close()
+		go h.refreshBlockingStream()
 	}
 }
 
@@ -563,7 +622,7 @@ func (h *H2Controller) ifStreamWillStillAndOperate(fm *h2.MetaHeadersFrame) bool
 	id := fm.StreamID
 	val, ok := h.streamMap.Load(id)
 	if !ok {
-		logger.Debug("operateHeaders not get stream in h2 controller")
+		logger.Debug("operateHeaders not get stream in h2 controller with id = ", id)
 		return true
 	}
 
@@ -605,14 +664,13 @@ func (h *H2Controller) serverRunRecv() {
 			}
 			logger.Debug("MetaHeader frame = ", fm.String(), "id = ", fm.StreamID)
 			header := h.handler.ReadFromH2MetaHeader(fm)
-			if err := h.addServerStream(header); err != nil {
-				logger.Errorf("add server stream err %+v", err)
-			}
+			h.addServerStream(header)
 		case *h2.DataFrame:
 			h.handleDataFrame(fm)
 		case *h2.RSTStreamFrame:
-			h.handleResetStream(fm.StreamID)
+			h.handleResetStreamFrame(fm)
 		case *h2.SettingsFrame:
+			h.handleSettingFrame(fm)
 		case *h2.PingFrame:
 			h.handlePingFrame(fm)
 		case *h2.WindowUpdateFrame:
@@ -625,42 +683,63 @@ func (h *H2Controller) serverRunRecv() {
 	}
 }
 
+func (h *H2Controller) handleSettingFrame(fm *h2.SettingsFrame) {
+	maxStreams := new(uint32)
+	if err := fm.ForeachSetting(func(s h2.Setting) error {
+		switch s.ID {
+		case h2.SettingMaxConcurrentStreams:
+			*maxStreams = s.Val
+			logger.Debug("set max concurrent stream = ", *maxStreams)
+			if *maxStreams > h.maxCurrentStream.Load() {
+				// can release blocking stream
+				go h.refreshBlockingStream()
+			}
+			h.maxCurrentStream.Store(*maxStreams)
+		case h2.SettingMaxHeaderListSize:
+		case h2.SettingMaxFrameSize:
+			h.maxFrameSize.Store(s.Val)
+			h.rawFramer.SetMaxReadFrameSize(s.Val)
+		default:
+			//ss = append(ss, s)
+		}
+		return nil
+	}); err != nil {
+		logger.Error("handle setting frame error!", err)
+		return
+	}
+}
+
 // addServerStream can create a serverStream and add to h2Controller by @data read from frame,
 // after receiving a request from client.
-func (h *H2Controller) addServerStream(data common.ProtocolHeader) error {
+func (h *H2Controller) addServerStream(data common.ProtocolHeader) {
+	// block if necessary
+	h.blockIfNecessory()
+
 	methodName := strings.Split(data.GetMethod(), "/")[2]
 	md, okm := h.mdMap[methodName]
 	streamd, oks := h.strMap[methodName]
 	if !okm && !oks {
 		logger.Errorf("method name %s not found in desc", methodName)
-		return perrors.New(fmt.Sprintf("method name %s not found in desc", methodName))
+		return
 	}
 	var newstm *serverStream
 	var err error
 	if okm {
 		newstm, err = newServerStream(data, md, h.url, h.service)
 		if err != nil {
-			return err
+			logger.Error("newServerStream error", err)
+			return
 		}
 		go h.runSendUnaryRsp(newstm)
 	} else {
 		newstm, err = newServerStream(data, streamd, h.url, h.service)
 		if err != nil {
-			return err
+			logger.Error("newServerStream error", err)
+			return
 		}
 		go h.runSendStreamRsp(newstm)
 	}
 	h.streamMap.Store(newstm.ID, newstm)
-	if h.getActiveMapLen() >= int(h.config.MaxActiveStream) {
-		h.state = draining
-		h.sendChan <- sendChanGoAwayPkg{
-			maxSteamID: uint32(h.streamID),
-			code:       h2.ErrCodeNo,
-			debugData:  make([]byte, 0),
-		}
-		return nil
-	}
-	return nil
 }
 
 // runSend called after shakehand, start sending data from chan to h2frame
@@ -694,8 +773,21 @@ func (h *H2Controller) runSend() {
 	}
 }
 
+func (h *H2Controller) blockIfNecessory() {
+	if h.getActiveMapLen() >= h.maxCurrentStream.Load() {
+		// meet max current Stream number, block!
+		blockChan := make(chan struct{})
+		h.blockChanListMutex.Lock()
+		h.blockStreamChan = append(h.blockStreamChan, blockChan)
+		h.blockChanListMutex.Unlock()
+		<-blockChan
+	}
+}
+
 // StreamInvoke can start streaming invocation, called by triple client
 func (h *H2Controller) StreamInvoke(ctx context.Context, method string) (grpc.ClientStream, error) {
+	// check if block
+	h.blockIfNecessory()
 	// metadata header
 	handler, err := common.GetProtocolHeaderHandler(h.url.Protocol)
 	if err != nil {
@@ -714,15 +806,9 @@ func (h *H2Controller) StreamInvoke(ctx context.Context, method string) (grpc.Cl
 	}
 	hflen := buf.Len()
 	hfData := buf.Next(hflen)
-
-	//todo rpcID change
-	id := uint32(atomic.AddInt32(&h.streamID, 2))
-	h.sendChan <- h2.HeadersFrameParam{
-		StreamID:      id,
-		EndHeaders:    true,
-		BlockFragment: hfData,
-		EndStream:     false,
-	}
+	// 1. get stream ID
+	id := h.streamID.Add(2)
+	// 2. create stream
 	clientStream := newClientStream(id)
 	serilizer, err := common.GetDubbo3Serializer(codec.DefaultDubbo3SerializerName)
 	if err != nil {
@@ -730,20 +816,30 @@ func (h *H2Controller) StreamInvoke(ctx context.Context, method string) (grpc.Cl
 		return nil, err
 	}
 	h.streamMap.Store(clientStream.ID, clientStream)
-	go clientStream.runSendDataToServerStream(h.sendChan)
+	// 3. start send data
+	go clientStream.runSendDataToServerStream(h.sendGeneralDataFrame)
+	h.sendChan <- h2.HeadersFrameParam{
+		StreamID:      id,
+		EndHeaders:    true,
+		BlockFragment: hfData,
+		EndStream:     false,
+	}
+	// 4. start receive data to send
 	pkgHandler, err := common.GetPackagerHandler(h.url.Protocol)
 	return newClientUserStream(clientStream, serilizer, pkgHandler), nil
 }
 
 // UnaryInvoke can start unary invocation, called by dubbo3 client
 func (h *H2Controller) UnaryInvoke(ctx context.Context, method string, addr string, data []byte, reply interface{}, url *dubboCommon.URL) error {
+	// check if block
+	h.blockIfNecessory()
+
 	// 1. set client stream
-	id := uint32(atomic.AddInt32(&h.streamID, 2))
+	id := h.streamID.Add(2)
 	clientStream := newClientStream(id)
 	h.streamMap.Store(clientStream.ID, clientStream)
 
 	// 2. send req messages
-
 	// metadata header
 	handler, err := common.GetProtocolHeaderHandler(url.Protocol)
 	if err != nil {
@@ -774,11 +870,8 @@ func (h *H2Controller) UnaryInvoke(ctx context.Context, method string, addr stri
 	}
 
 	// data send
-	h.sendChan <- sendChanDataPkg{
-		streamID:  id,
-		endStream: true,
-		data:      h.pkgHandler.Pkg2FrameData(data),
-	}
+	h.sendGeneralDataFrame(id, true, h.pkgHandler.Pkg2FrameData(data))
+	// half close stream
 	h.onEndStreamRecvOrSend(clientStream)
 
 	// 3. recv rsp
@@ -794,12 +887,47 @@ func (h *H2Controller) UnaryInvoke(ctx context.Context, method string, addr stri
 		return status.Err(codes.Canceled, "conn reset by peers")
 	}
 
-	if err := proto.Unmarshal(h.pkgHandler.Frame2PkgData(recvData.buffer.Bytes()), reply.(proto.Message)); err != nil {
+	rawData, _ := h.pkgHandler.Frame2PkgData(recvData.buffer.Bytes())
+	if err := proto.Unmarshal(rawData, reply.(proto.Message)); err != nil {
 		logger.Error("client unmarshal rsp err:", err)
 		return err
 	}
 
+	// 4. recv endstream header
+	// if close successfully, it would read from closed chan, and got noError
+	// if endStream header is with error, like RST frame, this would send Error to invoker
+	recvData = <-recvChan
+	if recvData.GetMsgType() == ServerStreamCloseMsgType {
+		return toRPCErr(recvData.err)
+	}
 	return nil
+}
+
+func (h2 *H2Controller) sendGeneralDataFrame(streamID uint32, endStream bool, data []byte) {
+	i := 0
+	maxFramesize := int(h2.maxFrameSize.Load())
+	lenData := len(data)
+	// split data logic
+	for i < lenData {
+		if i+maxFramesize >= lenData { // final frame
+			h2.sendChan <- sendChanDataPkg{
+				endStream: endStream,
+				data:      data[i:lenData],
+				streamID:  streamID,
+			}
+		} else { // not final frame
+			h2.sendChan <- sendChanDataPkg{
+				endStream: false,
+				data:      data[i : i+maxFramesize],
+				streamID:  streamID,
+			}
+		}
+		i += maxFramesize
+	}
+}
+
+func (h2 *H2Controller) readGeneralDataFrame() {
+
 }
 
 func (h2 *H2Controller) close() {

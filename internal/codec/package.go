@@ -41,16 +41,22 @@ type TriplePackageHandler struct {
 	//codec  *CodeC
 }
 
-func (t *TriplePackageHandler) Frame2PkgData(frameData []byte) []byte {
+// Frame2PkgData/Pkg2FrameData is not as useless as you think!
+// it add the len of frameData to the front of Triple/grpc pkg
+// when receiving streaming rpc package, as there is no EndStream flag between each stream pkg
+// the len of frameData in the front of pkg is the only way to split each pkg in transporting
+func (t *TriplePackageHandler) Frame2PkgData(frameData []byte) ([]byte, uint32) {
 	if len(frameData) < 5 {
-		return []byte{}
+		return []byte{}, 0
 	}
 	lineHeader := frameData[:5]
 	length := binary.BigEndian.Uint32(lineHeader[1:])
 	if len(frameData) < 5+int(length) {
-		return []byte{}
+		// used in streaming rpc splited header
+		// we only need length of all data
+		return frameData[5:], length
 	}
-	return frameData[5 : 5+length]
+	return frameData[5 : 5+length], length
 }
 func (t *TriplePackageHandler) Pkg2FrameData(pkgData []byte) []byte {
 	rsp := make([]byte, 5+len(pkgData))
