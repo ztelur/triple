@@ -30,6 +30,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 )
 
 import (
@@ -82,6 +83,11 @@ type H2Controller struct {
 	blockChanListMutex sync.Mutex
 
 	maxFrameSize atomic.Uint32
+
+	fc                       *trInFlow
+	initStreamInitWindowSize uint32
+
+	sendQuota uint32
 }
 
 type sendChanDataPkg struct {
@@ -94,6 +100,11 @@ type sendChanGoAwayPkg struct {
 	maxSteamID uint32
 	code       h2.ErrCode
 	debugData  []byte
+}
+
+type sendWindowsUpdataPkg struct {
+	streamID  uint32
+	increment uint32
 }
 
 // Dubbo3GrpcService is gRPC service, used to check impl
@@ -184,6 +195,14 @@ func isTripleFlagSetting(setting h2.Setting) bool {
 	return setting.ID == tripleFlagSettingID && setting.Val == tripleFlagSettingVal
 }
 
+/*
+config:
+- max frame size
+- max concurrent streams
+- init window size
+- ...
+*/
+
 // H2ShakeHand can send magic data and setting at the beginning of conn
 // after check and send, it start listening from h2frame to streamMap
 func (h *H2Controller) H2ShakeHand() error {
@@ -193,13 +212,27 @@ func (h *H2Controller) H2ShakeHand() error {
 		ID:  tripleFlagSettingID,
 		Val: tripleFlagSettingVal,
 	}}
-	// todo default setting
 	settings := []h2.Setting{{
-		ID:  0x5,
-		Val: defaultMaxFrameSize,
+		ID:  h2.SettingInitialWindowSize,
+		Val: defaultConnInitWindowSize,
 	}}
 
+	h.fc = &trInFlow{limit: defaultConnInitWindowSize}
+	h.initStreamInitWindowSize = defaultStreamInitWindowSize
+	h.sendQuota = defaultConnInitWindowSize
+
 	if h.isServer { // server
+		// flowContorl
+
+		settings = append(settings,
+			[]h2.Setting{{
+				ID:  h2.SettingMaxFrameSize,
+				Val: defaultMaxFrameSize,
+			}, {
+				ID:  h2.SettingMaxConcurrentStreams,
+				Val: defaultMaxConcurrentStreams,
+			}}...)
+
 		// server end 1: write empty setting
 		if err := h.rawFramer.WriteSettings(settings...); err != nil {
 			logger.Error("server write setting frame error", err)
@@ -250,7 +283,7 @@ func (h *H2Controller) H2ShakeHand() error {
 			logger.Errorf("client write preface err = ", err)
 			return err
 		}
-
+		tripleFlagSetting = append(tripleFlagSetting, settings...)
 		// server end 2：write first empty setting
 		if err := h.rawFramer.WriteSettings(tripleFlagSetting...); err != nil {
 			logger.Errorf("client write setting frame err = ", err)
@@ -347,6 +380,10 @@ func (h *H2Controller) runSendUnaryRsp(stream *serverStream) {
 			}
 		}
 		hflen := buf.Len()
+		// todo more graceful flow control
+		//if hflen < int(h.sendQuota) { // conn level flow control
+		//	continue
+		//}
 		hfData := buf.Next(hflen)
 
 		logger.Debug("server send stream id = ", id)
@@ -460,7 +497,17 @@ func (h *H2Controller) runSendStreamRsp(stream *serverStream) {
 		h.sendGeneralDataFrame(id, false, sendData)
 	}
 }
-
+func (h *H2Controller) handleWindowUpdateHandler(fm *h2.WindowUpdateFrame) {
+	// now triple only support conn level flow control
+	if fm.StreamID == 0 {
+		h.sendQuota += fm.Increment
+		return
+	}
+	//s, ok := h.streamMap.Load(fm.StreamID)
+	//if ok{
+	//	s.(stream).
+	//}
+}
 func (h *H2Controller) handleDataFrame(fm *h2.DataFrame) {
 	id := fm.StreamID
 	logger.Debug("DataFrame = ", fm.String(), "id = ", id)
@@ -468,6 +515,16 @@ func (h *H2Controller) handleDataFrame(fm *h2.DataFrame) {
 		logger.Error("ID == 0, send goaway with errorcode = Protocol")
 		h.sendGoAwayWithErrorCode(h2.ErrCodeProtocol)
 		return
+	}
+	if w := h.fc.onData(fm.Header().Length); w > 0 {
+		h.sendChan <- sendWindowsUpdataPkg{
+			streamID:  0,
+			increment: w,
+		}
+		h.sendChan <- sendWindowsUpdataPkg{
+			streamID:  id,
+			increment: w,
+		}
 	}
 	data := make([]byte, len(fm.Data()))
 	copy(data, fm.Data())
@@ -707,6 +764,7 @@ func (h *H2Controller) handleSettingFrame(fm *h2.SettingsFrame) {
 		logger.Error("handle setting frame error!", err)
 		return
 	}
+	h.rawFramer.WriteSettingsAck()
 }
 
 // addServerStream can create a serverStream and add to h2Controller by @data read from frame,
@@ -767,7 +825,10 @@ func (h *H2Controller) runSend() {
 			if err := h.rawFramer.WritePing(toSend.IsAck(), toSend.Data); err != nil {
 				logger.Errorf("rawFramer WriteRSTStream err = ", err)
 			}
-
+		case sendWindowsUpdataPkg:
+			if err := h.rawFramer.WriteWindowUpdate(toSend.streamID, toSend.increment); err != nil {
+				logger.Errorf("rawFramer WriteWindowUpdate err = ", err)
+			}
 		default:
 		}
 	}
@@ -907,6 +968,7 @@ func (h2 *H2Controller) sendGeneralDataFrame(streamID uint32, endStream bool, da
 	i := 0
 	maxFramesize := int(h2.maxFrameSize.Load())
 	lenData := len(data)
+	h2.sendQuota -= uint32(lenData)
 	// split data logic
 	for i < lenData {
 		if i+maxFramesize >= lenData { // final frame
@@ -923,6 +985,8 @@ func (h2 *H2Controller) sendGeneralDataFrame(streamID uint32, endStream bool, da
 			}
 		}
 		i += maxFramesize
+		// todo now I use this to block each sending. I'll use flow control blocking to change this logic
+		time.Sleep(time.Millisecond * 10)
 	}
 }
 

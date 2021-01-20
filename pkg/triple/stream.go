@@ -326,7 +326,7 @@ func (cs *clientStream) runSendDataToServerStream(f func(streamID uint32, endStr
 		case <-cs.closeChan:
 			return
 		case sendMsg := <-send:
-			sendData := sendMsg.buffer.Bytes()
+			sendData := sendMsg.buffer.Bytes() // 存在安全性问题
 			f(cs.ID, false, sendData)
 		}
 

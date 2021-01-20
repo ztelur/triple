@@ -9,3 +9,6 @@ const (
 )
 
 const defaultMaxFrameSize = 16384
+const defaultMaxConcurrentStreams = 100
+const defaultStreamInitWindowSize = 65535
+const defaultConnInitWindowSize = 65535
