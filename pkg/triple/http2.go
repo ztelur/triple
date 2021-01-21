@@ -96,7 +96,7 @@ type H2Controller struct {
 	sendChan chan interface{}
 
 	// tripleHeaderFlag is used to identify if client is triple client or grpc client
-	// if is grpc, it would not send triple header to client
+	// not it is useless, but may be useful in the futurego run
 	tripleHeaderFlag bool
 
 	// state shows conn state, after receiving go away frame, state will be set to draining
@@ -318,7 +318,7 @@ func (h *H2Controller) H2ShakeHand() error {
 	// start flowControl sending to prepare to send data frame
 	go h.flowController.RunFlowControlSending()
 
-	// start receiving
+	// start receiving frame
 	if h.isServer {
 		go h.serverRunRecv()
 	} else {
@@ -408,10 +408,6 @@ func (h *H2Controller) runSendUnaryRsp(stream *serverStream) {
 		headerFields = make([]hpack.HeaderField, 0, 2) // at least :status, content-type will be there if none else.
 		headerFields = append(headerFields, hpack.HeaderField{Name: "grpc-status", Value: "0"})
 		headerFields = append(headerFields, hpack.HeaderField{Name: "grpc-message", Value: ""})
-		if h.tripleHeaderFlag {
-			// todo : now response client with extra header fields may cause error
-			// headerFields = handler.WriteHeaderField(h.url, context.Background(), headerFields)
-		}
 		for _, f := range headerFields {
 			if err := enc.WriteField(f); err != nil {
 				logger.Error("error: enc.WriteField err = ", err)
@@ -479,11 +475,6 @@ func (h *H2Controller) runSendStreamRsp(stream *serverStream) {
 			headerFields := make([]hpack.HeaderField, 0, 2) // at least :status, content-type will be there if none else.
 			headerFields = append(headerFields, hpack.HeaderField{Name: ":status", Value: "200"})
 			headerFields = append(headerFields, hpack.HeaderField{Name: "content-type", Value: "application/grpc"})
-			if h.tripleHeaderFlag {
-				// todo
-				// headerFields = handler.WriteHeaderField(h.url, context.Background(), headerFields)
-			}
-
 			var buf bytes.Buffer
 			enc := hpack.NewEncoder(&buf)
 			for _, f := range headerFields {

@@ -7,14 +7,14 @@ import (
 
 // H2FlowController cotrol
 type H2FlowController struct {
+	// TrInFlow is used to control windows update frame
+	TrInFlow
+
 	// FlowControlLock is locked when anyone touch sendQuota and flowControlMap
 	FlowControlLock sync.Mutex
 	flowControlMap  map[uint32][]common.SendChanDataPkg
 	sendQuota       uint32
 	sendChan        chan interface{}
-
-	// TrInFlow is used to control windows update frame
-	TrInFlow
 }
 
 // NewH2FlowController create H2 flow controller with @sendChan to send out common.SendChanDataPkg

@@ -89,14 +89,6 @@ func (t TripleHeaderHandler) WriteHeaderField(url *dubboCommon.URL, ctx context.
 	if headerFields == nil {
 		headerFields = make([]hpack.HeaderField, 0, 8)
 	}
-	//haveContentType := false
-	//for _, v := range headerFields {
-	//	if v.Name == "content-type" {
-	//		haveContentType = true
-	//	}
-	//}
-
-	// bug!
 
 	headerFields = append(headerFields, hpack.HeaderField{Name: ":method", Value: "POST"})
 	headerFields = append(headerFields, hpack.HeaderField{Name: ":scheme", Value: "http"})
