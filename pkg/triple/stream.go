@@ -321,7 +321,7 @@ func (cs *clientStream) close() {
 	close(cs.recvBuf.c)
 }
 
-func (cs *clientStream) runSendDataToServerStream(f func(streamID uint32, endStream bool, data []byte) chan struct{}) {
+func (cs *clientStream) runSendDataToServerStream(flowCtrFunc func(id uint32, pkg common.SendChanDataPkg), frameFunc func(streamID uint32, endStream bool, data []byte, f func(id uint32, pkg common.SendChanDataPkg)) chan struct{}) {
 	send := cs.getSend()
 	for {
 		select {
@@ -329,7 +329,7 @@ func (cs *clientStream) runSendDataToServerStream(f func(streamID uint32, endStr
 			return
 		case sendMsg := <-send:
 			sendData := sendMsg.buffer.Bytes() // 存在安全性问题
-			f(cs.ID, false, sendData)
+			frameFunc(cs.ID, false, sendData, flowCtrFunc)
 		}
 
 	}
