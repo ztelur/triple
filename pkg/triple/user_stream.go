@@ -19,6 +19,7 @@ package triple
 
 import (
 	"context"
+	"errors"
 	"github.com/apache/dubbo-go/common/logger"
 	"google.golang.org/grpc/metadata"
 )
@@ -60,6 +61,9 @@ func (ss *baseUserStream) SendMsg(m interface{}) error {
 func (ss *baseUserStream) RecvMsg(m interface{}) error {
 	recvChan := ss.stream.getRecv()
 	readBuf := <-recvChan
+	if readBuf.buffer == nil {
+		return errors.New("user stream closed!")
+	}
 	pkgData, _ := ss.pkgHandler.Frame2PkgData(readBuf.buffer.Bytes())
 	if err := ss.serilizer.Unmarshal(pkgData, m); err != nil {
 		return err

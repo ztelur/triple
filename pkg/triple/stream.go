@@ -257,6 +257,7 @@ type serverStream struct {
 
 func (ss *serverStream) close() {
 	ss.processor.close()
+	// if buffer not close, it will block client end, which is waiting for <- chan
 	close(ss.sendBuf.c)
 	close(ss.recvBuf.c)
 }
@@ -315,11 +316,12 @@ func newClientStream(streamID uint32) *clientStream {
 
 func (cs *clientStream) close() {
 	cs.closeChan <- struct{}{}
+	// if buffer not close, it will block client end, which is waiting for <- chan
 	close(cs.sendBuf.c)
 	close(cs.recvBuf.c)
 }
 
-func (cs *clientStream) runSendDataToServerStream(f func(streamID uint32, endStream bool, data []byte)) {
+func (cs *clientStream) runSendDataToServerStream(f func(streamID uint32, endStream bool, data []byte) chan struct{}) {
 	send := cs.getSend()
 	for {
 		select {
