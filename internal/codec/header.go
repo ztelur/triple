@@ -89,6 +89,7 @@ func (t TripleHeaderHandler) WriteHeaderField(url *dubboCommon.URL, ctx context.
 	if headerFields == nil {
 		headerFields = make([]hpack.HeaderField, 0, 8)
 	}
+
 	headerFields = append(headerFields, hpack.HeaderField{Name: ":method", Value: "POST"})
 	headerFields = append(headerFields, hpack.HeaderField{Name: ":scheme", Value: "http"})
 	headerFields = append(headerFields, hpack.HeaderField{Name: ":path", Value: url.GetParam(":path", "")}) // added when invoke, parse grpc 'method' to :path
