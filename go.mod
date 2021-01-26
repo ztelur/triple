@@ -11,5 +11,5 @@ require (
 	go.uber.org/atomic v1.7.0
 	golang.org/x/net v0.0.0-20201224014010-6772e930b67b
 	google.golang.org/genproto v0.0.0-20210106152847-07624b53cd92
-	google.golang.org/grpc v1.34.0
+	google.golang.org/grpc v1.26.0
 )
