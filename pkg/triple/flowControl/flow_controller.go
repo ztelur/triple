@@ -12,6 +12,7 @@ type H2FlowController struct {
 
 	// FlowControlLock is locked when anyone touch sendQuota and flowControlMap
 	FlowControlLock sync.Mutex
+
 	flowControlMap  map[uint32][]common.SendChanDataPkg
 	sendQuota       uint32
 	sendChan        chan interface{}
@@ -78,7 +79,7 @@ func (fc *H2FlowController) PushToFlowControlMap(id uint32, pkg common.SendChanD
 	}
 }
 
-// AddSendQuota add quota when receive WINDOW_UPDATE frame
+// AddSendQuota add quota when receive WINDOW_UPDATE frame 当收到 WINDOW_UPDATE 后增加配额
 func (fc *H2FlowController) AddSendQuota(addition uint32) {
 	fc.FlowControlLock.Lock()
 	fc.sendQuota += addition
