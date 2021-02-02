@@ -19,18 +19,20 @@ package main
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"github.com/apache/dubbo-go/common"
+	"github.com/apache/dubbo-go/common/logger"
+	"github.com/dubbogo/triple/benchmark/protobuf"
 	"github.com/dubbogo/triple/internal/syscall"
 	"github.com/dubbogo/triple/pkg/triple"
-	"github.com/apache/dubbo-go/common/logger"
-	"time"
 	"net/url"
 	"os"
 	"os/signal"
 	"runtime"
 	"runtime/pprof"
+	"time"
 )
 
 
@@ -46,29 +48,33 @@ const (
 )
 
 
-type testService struct {
-}
-
-func (s *testService) Method1(ctx context.Context, args testService, rsp *struct{}) error {
-	return nil
-}
-func (s *testService) Method2(ctx context.Context, args []interface{}) (testService, error) {
-	return testService{}, nil
-}
-func (s *testService) Method3(ctx context.Context, args []interface{}, rsp *struct{}) {
-}
-func (s *testService) Method4(ctx context.Context, args []interface{}, rsp *struct{}) *testService {
-	return nil
-}
-func (s *testService) Reference() string {
-	return referenceTestPath
-}
-
 var (
 	port     = flag.String("port", "50051", "Localhost port to listen on.")
 	testName = flag.String("test_name", "", "Name of the test used for creating profiles.")
 
 )
+
+type GreeterProvider struct {
+	*protobuf.GreeterProviderBase
+}
+
+func NewGreeterProvider() *GreeterProvider {
+	return &GreeterProvider{
+		GreeterProviderBase: &protobuf.GreeterProviderBase{},
+	}
+}
+
+func (g *GreeterProvider) SayHello(ctx context.Context, req *protobuf.HelloRequest) (reply *protobuf.HelloReply, err error) {
+	fmt.Printf("req: %v", req)
+	fmt.Println(ctx.Value("tri-req-id"))
+	return nil, errors.New("rpc call error")
+	//return &protobuf.HelloReply{Message: "this is message from reply"}, nil
+}
+
+func (g *GreeterProvider) Reference() string {
+	return "GrpcGreeterImpl"
+}
+
 
 func main()  {
 
@@ -92,13 +98,13 @@ func main()  {
 	url := common.NewURLWithOptions(common.WithPath("com.test.Service"),
 		common.WithUsername(userName),
 		common.WithPassword(password),
-		common.WithProtocol("testprotocol"),
+		common.WithProtocol("dubbo3"),
 		common.WithIp(loopbackAddress),
 		common.WithPort(*port),
 		common.WithMethods(methods),
 		common.WithParams(params),
 		common.WithParamsValue("key2", "value2"))
-	service := &testService{}
+	service := &GreeterProvider{}
 	tripleServer := triple.NewTripleServer(url, service)
 	tripleServer.Start()
 

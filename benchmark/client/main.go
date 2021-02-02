@@ -22,6 +22,7 @@ import (
 	"flag"
 	"fmt"
 	"github.com/apache/dubbo-go/common"
+	"github.com/apache/dubbo-go/config"
 	"github.com/dubbogo/triple/benchmark/stats"
 	"github.com/dubbogo/triple/internal/syscall"
 	"github.com/dubbogo/triple/pkg/triple"
@@ -70,16 +71,22 @@ var (
 
 )
 
+var grpcGreeterImpl = new(GrpcGreeterImpl)
+
+func init() {
+	config.SetConsumerService(grpcGreeterImpl)
+}
+
 
 func main()  {
 
 	methods := []string{"Methodone,methodtwo"}
 	params := url.Values{}
-	params.Set("key", "value")
+	params.Set("bean.name", "GrpcGreeterImpl")
 	url := common.NewURLWithOptions(common.WithPath("com.test.Service"),
 		common.WithUsername(userName),
 		common.WithPassword(password),
-		common.WithProtocol("testprotocol"),
+		common.WithProtocol("dubbo3"),
 		common.WithIp(loopbackAddress),
 		common.WithPort(*port),
 		common.WithMethods(methods),
