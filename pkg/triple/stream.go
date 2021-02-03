@@ -231,7 +231,9 @@ func (s *baseStream) onRecvEs() streamState {
 
 func (s *baseStream) closeWithError(err error) {
 	s.putRecvErr(err)
-	s.facadeStream.close()
+	if s.facadeStream != nil {
+		s.facadeStream.close()
+	}
 }
 
 func newBaseStream(streamID uint32, service dubboCommon.RPCService) *baseStream {
