@@ -27,11 +27,8 @@ import (
 
 import (
 	dubboCommon "github.com/apache/dubbo-go/common"
-	"github.com/apache/dubbo-go/common/constant"
 	"github.com/apache/dubbo-go/common/logger"
-	// now triple relies dubbogo config pkg
-	// in the future, it may be change to an api that let any framework to set consumer service
-	"github.com/apache/dubbo-go/config"
+
 	"github.com/golang/protobuf/proto"
 	"google.golang.org/grpc"
 )
@@ -85,9 +82,7 @@ func getInvoker(impl interface{}, conn *TripleConn) interface{} {
 
 // NewTripleClient create triple client with given @url,
 // it's return tripleClient , contains invoker, and contain triple conn
-func NewTripleClient(url *dubboCommon.URL) (*TripleClient, error) {
-	key := url.GetParam(constant.BEAN_NAME_KEY, "")
-	impl := config.GetConsumerService(key)
+func NewTripleClient(url *dubboCommon.URL, impl interface{}) (*TripleClient, error) {
 	tripleClient := &TripleClient{
 		url: url,
 	}
