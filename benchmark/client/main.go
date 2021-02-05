@@ -23,6 +23,7 @@ import (
 	"fmt"
 	"github.com/apache/dubbo-go/common"
 	"github.com/apache/dubbo-go/config"
+	"github.com/dubbogo/triple/benchmark/protobuf"
 	"github.com/dubbogo/triple/benchmark/stats"
 	"github.com/dubbogo/triple/internal/syscall"
 	"github.com/dubbogo/triple/pkg/triple"
@@ -80,10 +81,10 @@ func init() {
 
 func main()  {
 
-	methods := []string{"Methodone,methodtwo"}
+	methods := []string{"SayHello"}
 	params := url.Values{}
 	params.Set("bean.name", "GrpcGreeterImpl")
-	url := common.NewURLWithOptions(common.WithPath("com.test.Service"),
+	url := common.NewURLWithOptions(common.WithPath("GrpcGreeterImpl"),
 		common.WithUsername(userName),
 		common.WithPassword(password),
 		common.WithProtocol("dubbo3"),
@@ -94,12 +95,16 @@ func main()  {
 		common.WithParamsValue("key2", "value2"))
 
 
-
 	connectCtx, connectCancel := context.WithDeadline(context.Background(), time.Now().Add(5*time.Second))
 	defer connectCancel()
 
+
+	req := &protobuf.HelloRequest{Name: "zzz"}
+
 	in := make([]reflect.Value, 0, 16)
 	in = append(in, reflect.ValueOf(connectCtx))
+	in = append(in, reflect.ValueOf(req))
+
 
 	ctl := buildClients(url, connectCtx)
 
@@ -114,7 +119,7 @@ func main()  {
 	cpuBeg := syscall.GetCPUTime()
 
 	for _, ct := range ctl {
-		runWithClient(ct, "Methodone",  in, warmDeadline, endDeadline)
+		runWithClient(ct, "SayHello",  in, warmDeadline, endDeadline)
 	}
 
 	wg.Wait()

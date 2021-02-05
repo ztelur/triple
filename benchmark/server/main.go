@@ -92,10 +92,10 @@ func main()  {
 	pprof.StartCPUProfile(cf)
 	cpuBeg := syscall.GetCPUTime()
 
-	methods := []string{"Methodone,methodtwo"}
+	methods := []string{"SayHello"}
 	params := url.Values{}
 	params.Set("key", "value")
-	url := common.NewURLWithOptions(common.WithPath("com.test.Service"),
+	url := common.NewURLWithOptions(common.WithPath("GrpcGreeterImpl"),
 		common.WithUsername(userName),
 		common.WithPassword(password),
 		common.WithProtocol("dubbo3"),
@@ -105,6 +105,10 @@ func main()  {
 		common.WithParams(params),
 		common.WithParamsValue("key2", "value2"))
 	service := &GreeterProvider{}
+
+
+	
+
 	tripleServer := triple.NewTripleServer(url, service)
 	tripleServer.Start()
 
