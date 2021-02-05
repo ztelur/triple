@@ -89,7 +89,7 @@ type H2Controller struct {
 
 	handler    common.ProtocolHeaderHandler
 	pkgHandler common.PackageHandler
-	service    dubboCommon.RPCService
+	service    Dubbo3GrpcService
 
 	// sendChan is used to sendout any frame from this H2controller
 	// the receiver of sendChan: func runSend() will never be blocked
@@ -129,12 +129,7 @@ type Dubbo3GrpcService interface {
 	ServiceDesc() *grpc.ServiceDesc
 }
 
-func getMethodAndStreamDescMap(service dubboCommon.RPCService) (map[string]grpc.MethodDesc, map[string]grpc.StreamDesc, error) {
-	ds, ok := service.(Dubbo3GrpcService)
-	if !ok {
-		logger.Error("service is not Impl Dubbo3GrpcService")
-		return nil, nil, perrors.New("service is not Impl Dubbo3GrpcService")
-	}
+func getMethodAndStreamDescMap(ds Dubbo3GrpcService) (map[string]grpc.MethodDesc, map[string]grpc.StreamDesc, error) {
 	sdMap := make(map[string]grpc.MethodDesc, 8)
 	strMap := make(map[string]grpc.StreamDesc, 8)
 	for _, v := range ds.ServiceDesc().Methods {
@@ -147,7 +142,7 @@ func getMethodAndStreamDescMap(service dubboCommon.RPCService) (map[string]grpc.
 }
 
 // NewH2Controller can create H2Controller with conn
-func NewH2Controller(conn net.Conn, isServer bool, service dubboCommon.RPCService, url *dubboCommon.URL) (*H2Controller, error) {
+func NewH2Controller(conn net.Conn, isServer bool, service Dubbo3GrpcService, url *dubboCommon.URL) (*H2Controller, error) {
 	var mdMap map[string]grpc.MethodDesc
 	var strMap map[string]grpc.StreamDesc
 	var err error

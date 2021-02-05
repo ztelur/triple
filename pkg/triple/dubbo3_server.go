@@ -32,7 +32,7 @@ import (
 type TripleServer struct {
 	lst          net.Listener
 	addr         string
-	rpcService   common.RPCService
+	rpcService   Dubbo3GrpcService
 	url          *common.URL
 	h2Controller *H2Controller
 	once         sync.Once // use when destroy
@@ -40,7 +40,7 @@ type TripleServer struct {
 }
 
 // NewTripleServer can create Server with user impled @service and url
-func NewTripleServer(url *common.URL, service common.RPCService) *TripleServer {
+func NewTripleServer(url *common.URL, service Dubbo3GrpcService) *TripleServer {
 	return &TripleServer{
 		addr:       url.Location,
 		rpcService: service,

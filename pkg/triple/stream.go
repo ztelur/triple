@@ -113,7 +113,7 @@ type baseStream struct {
 	sendBuf *MsgBuffer
 	url     *dubboCommon.URL
 	header  common.ProtocolHeader
-	service dubboCommon.RPCService
+	service Dubbo3GrpcService
 	// splitBuffer is used to cache splited data from network, if exceed
 	splitBuffer BufferMsg
 	// fromFrameHeaderDataSize is got from dataFrame's header, which is 5 bytes and contains the total data size
@@ -236,7 +236,7 @@ func (s *baseStream) closeWithError(err error) {
 	}
 }
 
-func newBaseStream(streamID uint32, service dubboCommon.RPCService) *baseStream {
+func newBaseStream(streamID uint32, service Dubbo3GrpcService) *baseStream {
 	// stream and pkgHeader are the same level
 	return &baseStream{
 		ID:      streamID,
@@ -264,7 +264,7 @@ func (ss *serverStream) close() {
 	close(ss.recvBuf.c)
 }
 
-func newServerStream(header common.ProtocolHeader, desc interface{}, url *dubboCommon.URL, service dubboCommon.RPCService) (*serverStream, error) {
+func newServerStream(header common.ProtocolHeader, desc interface{}, url *dubboCommon.URL, service Dubbo3GrpcService) (*serverStream, error) {
 	baseStream := newBaseStream(header.GetStreamID(), service)
 
 	serverStream := &serverStream{
@@ -292,7 +292,7 @@ func newServerStream(header common.ProtocolHeader, desc interface{}, url *dubboC
 	return serverStream, nil
 }
 
-func (s *serverStream) getService() dubboCommon.RPCService {
+func (s *serverStream) getService() Dubbo3GrpcService {
 	return s.service
 }
 
