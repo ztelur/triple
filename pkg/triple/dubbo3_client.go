@@ -103,10 +103,11 @@ func (t *TripleClient) connect(url *dubboCommon.URL) error {
 	}
 	t.addr = url.Location
 	t.conn = conn
-	t.h2Controller, err = NewH2Controller(t.conn, false, nil, url)
+	t.h2Controller, err = NewH2Controller(conn, false, nil, url)
 	if err != nil {
 		return err
 	}
+	t.h2Controller.address = url.Location
 	return t.h2Controller.H2ShakeHand()
 }
 
@@ -121,7 +122,7 @@ func (t *TripleClient) Request(ctx context.Context, method string, arg, reply in
 			return err
 		}
 	}
-	if err := t.h2Controller.UnaryInvoke(ctx, method, t.conn.RemoteAddr().String(), reqData, reply, t.url); err != nil {
+	if err := t.h2Controller.UnaryInvoke(ctx, method, "", reqData, reply, t.url); err != nil {
 		return err
 	}
 	return nil

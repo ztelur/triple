@@ -20,6 +20,7 @@ package triple
 import (
 	"context"
 	"errors"
+	"fmt"
 	"github.com/apache/dubbo-go/common/logger"
 	"google.golang.org/grpc/metadata"
 )
@@ -54,13 +55,21 @@ func (ss *baseUserStream) SendMsg(m interface{}) error {
 		return err
 	}
 	rspFrameData := ss.pkgHandler.Pkg2FrameData(replyData)
+	fmt.Println("sendMsg putSend!!!")
 	ss.stream.putSend(rspFrameData, DataMsgType)
 	return nil
 }
 
+var abc = 0
+var def = 0
+
 func (ss *baseUserStream) RecvMsg(m interface{}) error {
 	recvChan := ss.stream.getRecv()
+	abc++
+	fmt.Println(ss.stream.getStreamID(), "-111", "abc =", abc)
 	readBuf := <-recvChan
+	def++
+	fmt.Println(ss.stream.getStreamID(), "-222", "def = ", def)
 	if readBuf.buffer == nil {
 		return errors.New("user stream closed!")
 	}

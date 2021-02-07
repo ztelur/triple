@@ -20,6 +20,7 @@ package triple
 import (
 	"bytes"
 	"context"
+	"crypto/tls"
 	"fmt"
 	"github.com/dubbogo/triple/internal/codes"
 	"github.com/dubbogo/triple/internal/status"
@@ -29,6 +30,7 @@ import (
 	"io"
 	"math"
 	"net"
+	"net/http"
 	"strconv"
 	"strings"
 	"sync"
@@ -63,6 +65,8 @@ type H2Controller struct {
 	// conn is used to init h2 framer
 	conn net.Conn
 
+	//
+	address string
 	// rawFramer is h2 frame handler of golang standard repository
 	rawFramer *h2.Framer
 
@@ -117,6 +121,88 @@ type H2Controller struct {
 
 	// frameSizeController frameSizeController is max data size controller and spliter
 	frameSizeController *frameSize.H2MaxFrameController
+}
+
+func (hc *H2Controller) GetHandler() func(w http.ResponseWriter, r *http.Request) {
+	return func(w http.ResponseWriter, r *http.Request) {
+
+		fm := h2.MetaHeadersFrame{
+			HeadersFrame: &h2.HeadersFrame{
+				FrameHeader: h2.FrameHeader{},
+			},
+		}
+		for k, v := range r.Header {
+			fm.Fields = append(fm.Fields, hpack.HeaderField{
+				Name:  k,
+				Value: v[0],
+			})
+		}
+		fm.Fields = append(fm.Fields, hpack.HeaderField{
+			Name:  ":path",
+			Value: r.URL.Path,
+		})
+		// todo server end can't read id from request
+		hc.streamIDLock.Lock()
+		hc.streamID += 2
+		fmt.Println(hc.streamID)
+		fm.StreamID = hc.streamID
+		hc.streamIDLock.Unlock()
+
+		header := hc.handler.ReadFromH2MetaHeader(&fm)
+		hc.addServerStream(header)
+
+		buf := make([]byte, 1000000)
+
+		splitBuffer := BufferMsg{
+			buffer: bytes.NewBuffer(make([]byte, 0)),
+		}
+
+		fromFrameHeaderDataSize := uint32(0)
+		for {
+			n, err := r.Body.Read(buf)
+			if err != nil {
+				panic(err)
+			}
+			splitedData := buf[:n]
+			if fromFrameHeaderDataSize == 0 {
+				// should parse data frame header first
+				var totalSize uint32
+				if splitedData, totalSize = hc.pkgHandler.Frame2PkgData(splitedData); totalSize == 0 {
+					return
+				} else {
+					fromFrameHeaderDataSize = totalSize
+				}
+				splitBuffer.buffer.Reset()
+			}
+			splitBuffer.buffer.Write(splitedData)
+			if splitBuffer.buffer.Len() > int(fromFrameHeaderDataSize) {
+				panic("Receive Splited Data is bigger than wanted!!!")
+				return
+			}
+
+			if splitBuffer.buffer.Len() == int(fromFrameHeaderDataSize) {
+				break
+			}
+		}
+
+		data := splitBuffer.buffer.Bytes()
+		val, ok := hc.streamMap.Load(fm.StreamID)
+		if !ok {
+			logger.Error("streamID = ", fm.StreamID, " not exist, send goaway with errorcode = StreamClosed")
+			return
+		}
+		val.(stream).putRecv(hc.pkgHandler.Pkg2FrameData(data), DataMsgType)
+
+		sendChan := val.(stream).getSend()
+		sendMsg := <-sendChan
+		sendData := sendMsg.buffer.Bytes()
+
+		w.Header().Add("content-type", "application/grpc")
+		w.Write(sendData)
+
+		w.Header().Add(h2.TrailerPrefix+"grpc-status", strconv.Itoa(int(sendMsg.st.Code())))
+		w.Header().Add(h2.TrailerPrefix+"grpc-message", encodeGrpcMessage(sendMsg.st.Message()))
+	}
 }
 
 // Dubbo3GrpcService is gRPC service, used to check impl
@@ -796,7 +882,8 @@ func (h *H2Controller) addServerStream(data common.ProtocolHeader) {
 			logger.Error("newServerStream error", err)
 			return
 		}
-		go h.runSendUnaryRsp(newstm)
+		// now, unary stream is only invoked by http2 api
+		//go h.runSendUnaryRsp(newstm)
 	} else {
 		newstm, err = newServerStream(data, streamd, h.url, h.service)
 		if err != nil {
@@ -918,82 +1005,63 @@ func (h *H2Controller) StreamInvoke(ctx context.Context, method string) (grpc.Cl
 }
 
 // UnaryInvoke can start unary invocation, called by dubbo3 client
-func (h *H2Controller) UnaryInvoke(ctx context.Context, method string, addr string, data []byte, reply interface{}, url *dubboCommon.URL) error {
-	// check if block
-	h.blockIfNecessory()
-
-	// 1. set client stream
-
-	h.streamIDLock.Lock()
-	h.streamID += 2
-	id := h.streamID
-
-	clientStream := newClientStream(id)
-	h.streamMap.Store(clientStream.ID, clientStream)
-
-	// 2. send req messages
-	// metadata header
-	handler, err := common.GetProtocolHeaderHandler(url.Protocol)
-	if err != nil {
-		logger.Error("can't find handler with protocol:", url.Protocol)
-		h.streamIDLock.Unlock()
-		return err
+func (h *H2Controller) UnaryInvoke(ctx context.Context, method string, addr12 string, data []byte, reply interface{}, url *dubboCommon.URL) error {
+	client := http.Client{
+		Transport: &h2.Transport{
+			// So http2.Transport doesn't complain the URL scheme isn't 'https'
+			AllowHTTP: true,
+			// Pretend we are dialing a TLS endpoint. (Note, we ignore the passed tls.Config)
+			DialTLS: func(network, addr string, cfg *tls.Config) (net.Conn, error) {
+				return net.Dial(network, addr)
+			},
+		},
 	}
-	// method name from grpc stub, set to :path field
-	url.SetParam(":path", method)
-	headerFields := handler.WriteHeaderField(url, ctx, nil)
-	var buf bytes.Buffer
-	enc := hpack.NewEncoder(&buf)
-	for _, f := range headerFields {
-		if err := enc.WriteField(f); err != nil {
-			logger.Error("error: enc.WriteField err = ", err)
-		} else {
-			//logger.Debug("encode field f = ", f.Name, " ", f.Value, " success")
+	buf := bytes.Buffer{}
+	buf.Write(h.pkgHandler.Pkg2FrameData(data))
+	rsp, err := client.Post("http://"+h.address+method, "application/grpc", &buf)
+	if err != nil {
+		panic(err)
+	}
+	readBuf := make([]byte, 1000000)
+
+	if err != nil {
+		panic(err)
+	}
+
+	splitBuffer := BufferMsg{
+		buffer: bytes.NewBuffer(make([]byte, 0)),
+	}
+	fromFrameHeaderDataSize := uint32(0)
+	for {
+		n, err := rsp.Body.Read(readBuf)
+		if err != nil {
+			panic(err)
+		}
+		splitedData := readBuf[:n]
+		if fromFrameHeaderDataSize == 0 {
+			// should parse data frame header first
+			var totalSize uint32
+			if splitedData, totalSize = h.pkgHandler.Frame2PkgData(splitedData); totalSize == 0 {
+				return nil
+			} else {
+				fromFrameHeaderDataSize = totalSize
+			}
+			splitBuffer.buffer.Reset()
+		}
+		splitBuffer.buffer.Write(splitedData)
+		if splitBuffer.buffer.Len() > int(fromFrameHeaderDataSize) {
+			panic("Receive Splited Data is bigger than wanted!!!")
+			return nil
+		}
+
+		if splitBuffer.buffer.Len() == int(fromFrameHeaderDataSize) {
+			break
 		}
 	}
-	hflen := buf.Len()
-	hfData := buf.Next(hflen)
 
-	// header send
-	h.sendChan <- h2.HeadersFrameParam{
-		StreamID:      id,
-		EndHeaders:    true,
-		BlockFragment: hfData,
-		EndStream:     false,
-	}
-	h.streamIDLock.Unlock()
-
-	// data send
-	cb := h.frameSizeController.SendGeneralDataFrame(id, true, h.pkgHandler.Pkg2FrameData(data), h.flowController.PushToFlowControlMap)
-	<-cb
-	// half close stream
-	h.onEndStreamRecvOrSend(clientStream)
-
-	// 3. recv rsp
-	recvChan := clientStream.getRecv()
-	recvData := <-recvChan
-	// todo add timeout
-	if recvData.GetMsgType() == ServerStreamCloseMsgType {
-		return toRPCErr(recvData.err)
-	}
-
-	// recv chan was closed
-	if recvData.buffer == nil {
-		return status.Err(codes.Canceled, "conn reset by peers")
-	}
-
-	rawData, _ := h.pkgHandler.Frame2PkgData(recvData.buffer.Bytes())
-	if err := proto.Unmarshal(rawData, reply.(proto.Message)); err != nil {
+	if err := proto.Unmarshal(splitBuffer.buffer.Bytes(), reply.(proto.Message)); err != nil {
 		logger.Error("client unmarshal rsp err:", err)
 		return err
-	}
-
-	// 4. recv endstream header
-	// if close successfully, it would read from closed chan, and got noError
-	// if endStream header is with error, like RST frame, this would send Error to invoker
-	recvData = <-recvChan
-	if recvData.GetMsgType() == ServerStreamCloseMsgType {
-		return toRPCErr(recvData.err)
 	}
 	return nil
 }
