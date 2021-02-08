@@ -20,7 +20,6 @@ package triple
 import (
 	"bytes"
 	"context"
-	"fmt"
 	"github.com/dubbogo/triple/internal/codes"
 	"github.com/dubbogo/triple/internal/status"
 	"github.com/dubbogo/triple/pkg/triple/flowControl"

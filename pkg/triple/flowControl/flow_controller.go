@@ -46,9 +46,6 @@ func (fc *H2FlowController) RunFlowControlSending() {
 				if int(fc.sendQuota) > len(v.Data) {
 					fc.sendChan <- v
 					endIndex = i + 1
-					if v.Cb != nil {
-						v.Cb <- struct{}{}
-					}
 					fc.sendQuota -= uint32(len(v.Data))
 				} else {
 					break
