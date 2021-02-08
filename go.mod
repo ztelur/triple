@@ -16,6 +16,4 @@ require (
 	gotest.tools v2.2.0+incompatible
 )
 
-replace (
-	golang.org/x/net => ../net
-)
+replace golang.org/x/net => github.com/dubbogo/net v0.0.0-20210208122052-3ebc7bbc2dd8
