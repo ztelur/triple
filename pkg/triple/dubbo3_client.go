@@ -97,18 +97,19 @@ func NewTripleClient(url *dubboCommon.URL, impl interface{}) (*TripleClient, err
 // Connect called when new TripleClient, which start a tcp conn with target addr
 func (t *TripleClient) connect(url *dubboCommon.URL) error {
 	logger.Info("want to connect to url = ", url.Location)
-	conn, err := net.Dial("tcp", url.Location)
-	if err != nil {
-		return err
-	}
+	//conn, err := net.Dial("tcp", url.Location)
+	//if err != nil {
+	//	return err
+	//}
 	t.addr = url.Location
-	t.conn = conn
-	t.h2Controller, err = NewH2Controller(conn, false, nil, url)
+	//t.conn = conn
+	var err error
+	t.h2Controller, err = NewH2Controller(nil, false, nil, url)
 	if err != nil {
 		return err
 	}
 	t.h2Controller.address = url.Location
-	return t.h2Controller.H2ShakeHand()
+	return nil
 }
 
 // Request call h2Controller to send unary rpc req to server

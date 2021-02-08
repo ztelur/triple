@@ -15,3 +15,7 @@ require (
 	google.golang.org/grpc v1.27.0
 	gotest.tools v2.2.0+incompatible
 )
+
+replace (
+	golang.org/x/net => ../net
+)

@@ -60,16 +60,9 @@ func (ss *baseUserStream) SendMsg(m interface{}) error {
 	return nil
 }
 
-var abc = 0
-var def = 0
-
 func (ss *baseUserStream) RecvMsg(m interface{}) error {
 	recvChan := ss.stream.getRecv()
-	abc++
-	fmt.Println(ss.stream.getStreamID(), "-111", "abc =", abc)
 	readBuf := <-recvChan
-	def++
-	fmt.Println(ss.stream.getStreamID(), "-222", "def = ", def)
 	if readBuf.buffer == nil {
 		return errors.New("user stream closed!")
 	}
