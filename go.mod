@@ -17,5 +17,3 @@ require (
 )
 
 replace golang.org/x/net => github.com/dubbogo/net v0.0.0-20210209064142-0e3827157a56
-
-//replace golang.org/x/net => ../net
