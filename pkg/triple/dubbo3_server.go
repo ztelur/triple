@@ -18,8 +18,10 @@
 package triple
 
 import (
+	"golang.org/x/net/http2"
 	"io"
 	"net"
+	"net/http"
 	"sync"
 )
 
@@ -94,10 +96,14 @@ func (t *TripleServer) run() {
 
 // handleRawConn create a H2 Controller to deal with new conn
 func (t *TripleServer) handleRawConn(conn net.Conn) error {
+	srv := &http2.Server{}
 	h2Controller, err := NewH2Controller(conn, true, t.rpcService, t.url)
 	if err != nil {
 		return err
 	}
 	t.h2Controller = h2Controller
-	return h2Controller.H2ShakeHand()
+	opts := &http2.ServeConnOpts{Handler: http.HandlerFunc(h2Controller.GetHandler())}
+	srv.ServeConn(conn, opts)
+	return nil
+	//return h2Controller.H2ShakeHand()
 }

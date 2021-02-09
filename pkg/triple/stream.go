@@ -88,8 +88,6 @@ const (
 // stream is not only a buffer stream
 // but an abstruct stream in h2 defination
 type stream interface {
-	getStreamID() uint32
-
 	// channel usage
 	putRecv(data []byte, msgType MsgType)
 	putSend(data []byte, msgType MsgType)
@@ -108,7 +106,6 @@ type stream interface {
 
 // baseStream is the basic  impl of stream interface, it impl for basic function of stream
 type baseStream struct {
-	ID      uint32
 	recvBuf *MsgBuffer
 	sendBuf *MsgBuffer
 	url     *dubboCommon.URL
@@ -128,10 +125,6 @@ type baseStream struct {
 	status *status.Status
 
 	state streamState
-}
-
-func (s *baseStream) getStreamID() uint32 {
-	return s.ID
 }
 
 func (s *baseStream) WriteStatus(st *status.Status) {
@@ -239,7 +232,6 @@ func (s *baseStream) closeWithError(err error) {
 func newBaseStream(streamID uint32, service Dubbo3GrpcService) *baseStream {
 	// stream and pkgHeader are the same level
 	return &baseStream{
-		ID:      streamID,
 		recvBuf: newRecvBuffer(),
 		sendBuf: newRecvBuffer(),
 		service: service,
@@ -323,18 +315,4 @@ func (cs *clientStream) close() {
 	//// if buffer not close, it will block client end, which is waiting for <- chan
 	//close(cs.sendBuf.c)
 	//close(cs.recvBuf.c)
-}
-
-func (cs *clientStream) runSendDataToServerStream(flowCtrFunc func(id uint32, pkg common.SendChanDataPkg), frameFunc func(streamID uint32, endStream bool, data []byte, f func(id uint32, pkg common.SendChanDataPkg)) chan struct{}) {
-	send := cs.getSend()
-	for {
-		select {
-		case <-cs.closeChan:
-			return
-		case sendMsg := <-send:
-			sendData := sendMsg.buffer.Bytes() // 存在安全性问题
-			frameFunc(cs.ID, false, sendData, flowCtrFunc)
-		}
-
-	}
 }

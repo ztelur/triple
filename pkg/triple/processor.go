@@ -144,6 +144,7 @@ func (s *unaryProcessor) runRPC() {
 				// it's enough that unary processor just send data msg to stream layer
 				// rpc status logic just let stream layer to handle
 				s.stream.putSend(rspData, DataMsgType)
+				s.stream.putSend(nil, ServerStreamCloseMsgType)
 			}()
 		}
 	}()
