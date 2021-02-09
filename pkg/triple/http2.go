@@ -22,15 +22,12 @@ import (
 	"context"
 	"crypto/tls"
 	"encoding/binary"
-	"fmt"
 	"go.uber.org/atomic"
 	"io"
 	"math"
 	"net"
 	"net/http"
-	"strconv"
 	"strings"
-	"sync"
 )
 
 import (
@@ -39,7 +36,7 @@ import (
 	"github.com/apache/dubbo-go/protocol"
 	"github.com/golang/protobuf/proto"
 	h2 "golang.org/x/net/http2"
-	"golang.org/x/net/http2/hpack"
+	h2Triple "golang.org/x/net/http2/triple"
 	"google.golang.org/grpc"
 )
 
@@ -60,11 +57,12 @@ type H2Controller struct {
 	// conn is used to init h2 framer
 	conn net.Conn
 
+	client http.Client
 	//
 	address string
 
-	// streamMap store all non-closed stream, key by streamID (uint32)
-	streamMap sync.Map
+	//// streamMap store all non-closed stream, key by streamID (uint32)
+	//streamMap sync.Map
 
 	// mdMap strMap is used to store discover of user impl function
 	mdMap  map[string]grpc.MethodDesc
@@ -74,7 +72,6 @@ type H2Controller struct {
 	// url is also used to init triple header
 	url *dubboCommon.URL
 
-	handler    common.ProtocolHeaderHandler
 	pkgHandler common.PackageHandler
 	service    Dubbo3GrpcService
 
@@ -148,40 +145,20 @@ func (hc *H2Controller) readSplitedDatas(rBody io.ReadCloser) chan BufferMsg {
 
 func (hc *H2Controller) GetHandler() func(w http.ResponseWriter, r *http.Request) {
 	return func(w http.ResponseWriter, r *http.Request) {
-		fm := h2.MetaHeadersFrame{
-			HeadersFrame: &h2.HeadersFrame{
-				FrameHeader: h2.FrameHeader{},
-			},
-		}
-		for k, v := range r.Header {
-			fm.Fields = append(fm.Fields, hpack.HeaderField{
-				Name:  k,
-				Value: v[0],
-			})
-		}
-		fm.Fields = append(fm.Fields, hpack.HeaderField{
-			Name:  ":path",
-			Value: r.URL.Path,
-		})
 
-		header := hc.handler.ReadFromH2MetaHeader(&fm)
-		hc.addServerStream(header)
-
-		val, ok := hc.streamMap.Load(fm.StreamID)
-		if !ok {
-			logger.Error("with not exist stream id")
-			return
+		headerHandler, _ := common.GetProtocolHeaderHandler(hc.url.Protocol, nil, nil)
+		header := headerHandler.ReadFromTripleReqHeader(r)
+		stream := hc.addServerStream(header)
+		if stream == nil {
+			logger.Error("creat server stream error!")
 		}
-		stream := val.(stream)
 		sendChan := stream.getSend()
-
 		ch := hc.readSplitedDatas(r.Body)
-
 		go func() {
 			for {
 				msgData := <-ch
 				if msgData.msgType == ServerStreamCloseMsgType {
-					fmt.Println("read from client stop!")
+					//fmt.Println("read from client stop!")
 					return
 				}
 				data := hc.pkgHandler.Pkg2FrameData(msgData.buffer.Bytes())
@@ -189,9 +166,7 @@ func (hc *H2Controller) GetHandler() func(w http.ResponseWriter, r *http.Request
 			}
 		}()
 
-		w.Header().Add("content-type", "application/grpc")
-		w.Header().Add(h2.TrailerPrefix+"grpc-status", strconv.Itoa(int(0))) // sendMsg.st.Code()
-		w.Header().Add(h2.TrailerPrefix+"grpc-message", encodeGrpcMessage(""))
+		headerHandler.WriteTripleFinalRspHeaderField(w)
 
 		for {
 			sendMsg := <-sendChan
@@ -239,28 +214,30 @@ func NewH2Controller(conn net.Conn, isServer bool, service Dubbo3GrpcService, ur
 		}
 	}
 
-	fm := h2.NewFramer(conn, conn)
-	// another change of fm readframe size is when receiving settig to update in handleSettingFrame()
-	fm.SetMaxReadFrameSize(common.DefaultMaxFrameSize)
-	fm.ReadMetaHeaders = hpack.NewDecoder(4096, nil)
-	var headerHandler common.ProtocolHeaderHandler
 	var pkgHandler common.PackageHandler
 
 	if url != nil {
-		headerHandler, _ = common.GetProtocolHeaderHandler(url.Protocol)
 		pkgHandler, _ = common.GetPackagerHandler(url.Protocol)
 	}
 	defaultMaxCurrentStream := atomic.Uint32{}
 	defaultMaxCurrentStream.Store(math.MaxUint32)
 
+	client := http.Client{
+		Transport: &h2.Transport{
+			// Pretend we are dialing a TLS endpoint. (Note, we ignore the passed tls.Config)
+			DialTLS: func(network, addr string, cfg *tls.Config) (net.Conn, error) {
+				return net.Dial(network, addr)
+			},
+		},
+	}
 	h2c := &H2Controller{
-		conn:       conn,
-		url:        url,
-		streamMap:  sync.Map{},
+		conn:   conn,
+		url:    url,
+		client: client,
+		//streamMap:  sync.Map{},
 		mdMap:      mdMap,
 		strMap:     strMap,
 		service:    service,
-		handler:    headerHandler,
 		pkgHandler: pkgHandler,
 		state:      common.Reachable,
 	}
@@ -269,14 +246,13 @@ func NewH2Controller(conn net.Conn, isServer bool, service Dubbo3GrpcService, ur
 
 // addServerStream can create a serverStream and add to h2Controller by @data read from frame,
 // after receiving a request from client.
-func (h *H2Controller) addServerStream(data common.ProtocolHeader) {
-
-	methodName := strings.Split(data.GetMethod(), "/")[2]
+func (h *H2Controller) addServerStream(data common.ProtocolHeader) stream {
+	methodName := strings.Split(data.GetPath(), "/")[2]
 	md, okm := h.mdMap[methodName]
 	streamd, oks := h.strMap[methodName]
 	if !okm && !oks {
 		logger.Errorf("method name %s not found in desc", methodName)
-		return
+		return nil
 	}
 	var newstm *serverStream
 	var err error
@@ -284,7 +260,7 @@ func (h *H2Controller) addServerStream(data common.ProtocolHeader) {
 		newstm, err = newServerStream(data, md, h.url, h.service)
 		if err != nil {
 			logger.Error("newServerStream error", err)
-			return
+			return nil
 		}
 		// now, unary stream is only invoked by http2 api
 		//go h.runSendUnaryRsp(newstm)
@@ -292,11 +268,11 @@ func (h *H2Controller) addServerStream(data common.ProtocolHeader) {
 		newstm, err = newServerStream(data, streamd, h.url, h.service)
 		if err != nil {
 			logger.Error("newServerStream error", err)
-			return
+			return nil
 		}
 		// go h.runSendStreamRsp(newstm)
 	}
-	h.streamMap.Store(newstm.ID, newstm)
+	return newstm
 }
 
 // StreamInvoke can start streaming invocation, called by triple client
@@ -308,35 +284,28 @@ func (h *H2Controller) StreamInvoke(ctx context.Context, method string) (grpc.Cl
 		return nil, err
 	}
 
-	client := http.Client{
-		Transport: &h2.Transport{
-			// Pretend we are dialing a TLS endpoint. (Note, we ignore the passed tls.Config)
-			DialTLS: func(network, addr string, cfg *tls.Config) (net.Conn, error) {
-				return net.Dial(network, addr)
-			},
-		},
-	}
-
 	tosend := clientStream.getSend()
-	sendStreamChan := make(chan h2.BufferMsg)
+	sendStreamChan := make(chan h2Triple.BufferMsg)
 	go func() {
 		for {
 			select {
 			case sendMsg := <-tosend:
-				sendStreamChan <- h2.BufferMsg{
+				sendStreamChan <- h2Triple.BufferMsg{
 					Buffer:  bytes.NewBuffer(sendMsg.buffer.Bytes()),
-					MsgType: h2.MsgType(sendMsg.msgType),
+					MsgType: h2Triple.MsgType(sendMsg.msgType),
 				}
 			default:
 
 			}
 		}
 	}()
-	stremaReq := h2.StreamingRequest{
+	headerHandler, _ := common.GetProtocolHeaderHandler(h.url.Protocol, h.url, ctx)
+	stremaReq := h2Triple.StreamingRequest{
 		SendChan: sendStreamChan,
+		Handler:  headerHandler,
 	}
 	go func() {
-		rsp, err := client.Post("https://"+h.address+method, "application/grpc", &stremaReq)
+		rsp, err := h.client.Post("https://"+h.address+method, "application/grpc+proto", &stremaReq)
 		if err != nil {
 			panic(err)
 		}
@@ -360,30 +329,24 @@ func (h *H2Controller) StreamInvoke(ctx context.Context, method string) (grpc.Cl
 
 // UnaryInvoke can start unary invocation, called by dubbo3 client
 func (h *H2Controller) UnaryInvoke(ctx context.Context, method string, addr12 string, data []byte, reply interface{}, url *dubboCommon.URL) error {
-	client := http.Client{
-		Transport: &h2.Transport{
-			// Pretend we are dialing a TLS endpoint. (Note, we ignore the passed tls.Config)
-			DialTLS: func(network, addr string, cfg *tls.Config) (net.Conn, error) {
-				return net.Dial(network, addr)
-			},
-		},
-	}
 
-	sendStreamChan := make(chan h2.BufferMsg, 1)
-	sendStreamChan <- h2.BufferMsg{
+	sendStreamChan := make(chan h2Triple.BufferMsg, 1)
+	sendStreamChan <- h2Triple.BufferMsg{
 		Buffer:  bytes.NewBuffer(h.pkgHandler.Pkg2FrameData(data)),
-		MsgType: h2.MsgType(DataMsgType),
+		MsgType: h2Triple.MsgType(DataMsgType),
 	}
 
-	stremaReq := h2.StreamingRequest{
+	headerHandler, _ := common.GetProtocolHeaderHandler(h.url.Protocol, h.url, ctx)
+	stremaReq := h2Triple.StreamingRequest{
 		SendChan: sendStreamChan,
+		Handler:  headerHandler,
 	}
 
-	rsp, err := client.Post("https://"+h.address+method, "application/grpc", &stremaReq)
+	rsp, err := h.client.Post("https://"+h.address+method, "application/grpc+proto", &stremaReq)
 	if err != nil {
 		panic(err)
 	}
-	readBuf := make([]byte, 1000000)
+	readBuf := make([]byte, defaultReadBuffer)
 
 	if err != nil {
 		panic(err)
@@ -428,9 +391,9 @@ func (h *H2Controller) UnaryInvoke(ctx context.Context, method string, addr12 st
 }
 
 func (h2 *H2Controller) close() {
-	h2.streamMap.Range(func(k, v interface{}) bool {
-		v.(stream).close()
-		return true
-	})
+	//h2.streamMap.Range(func(k, v interface{}) bool {
+	//	v.(stream).close()
+	//	return true
+	//})
 	h2.state = common.Closing
 }

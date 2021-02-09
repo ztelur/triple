@@ -20,35 +20,35 @@ package common
 import (
 	"context"
 	"fmt"
+	"github.com/apache/dubbo-go/common"
+	"net/http"
 )
 import (
-	"github.com/apache/dubbo-go/common"
 	"github.com/apache/dubbo-go/common/logger"
 	perrors "github.com/pkg/errors"
-	"golang.org/x/net/http2"
-	"golang.org/x/net/http2/hpack"
 )
 
 // ProtocolHeader
 type ProtocolHeader interface {
 	GetStreamID() uint32
-	GetMethod() string
+	GetPath() string
 	FieldToCtx() context.Context
 }
 
 type ProtocolHeaderHandler interface {
-	ReadFromH2MetaHeader(frame *http2.MetaHeadersFrame) ProtocolHeader
-	WriteHeaderField(url *common.URL, ctx context.Context, headerFieldBase []hpack.HeaderField) []hpack.HeaderField
+	ReadFromTripleReqHeader(header *http.Request) ProtocolHeader
+	WriteTripleReqHeaderField(header http.Header) http.Header
+	WriteTripleFinalRspHeaderField(w http.ResponseWriter)
 	//Context2Url(ctx context.Context, url *common.URL)
 }
 
-type ProtocolHeaderHandlerFactory func() ProtocolHeaderHandler
+type ProtocolHeaderHandlerFactory func(url *common.URL, ctx context.Context) ProtocolHeaderHandler
 
 var protocolHeaderHandlerFactoryMap = make(map[string]ProtocolHeaderHandlerFactory)
 
-func GetProtocolHeaderHandler(protocol string) (ProtocolHeaderHandler, error) {
+func GetProtocolHeaderHandler(protocol string, url *common.URL, ctx context.Context) (ProtocolHeaderHandler, error) {
 	if f, ok := protocolHeaderHandlerFactoryMap[protocol]; ok {
-		return f(), nil
+		return f(url, ctx), nil
 	}
 	logger.Error("Protocol ", protocol, " header undefined!")
 	return nil, perrors.New(fmt.Sprintf("Protocol %s header undefined!", protocol))
