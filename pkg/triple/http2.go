@@ -57,8 +57,10 @@ type H2Controller struct {
 	// conn is used to init h2 framer
 	conn net.Conn
 
+	// client stores http2 client
 	client http.Client
-	//
+
+	// address stores target ip:port
 	address string
 
 	//// streamMap store all non-closed stream, key by streamID (uint32)
