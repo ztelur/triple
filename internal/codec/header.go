@@ -90,7 +90,7 @@ type TripleHeaderHandler struct {
 	Ctx context.Context
 }
 
-// WriteHeaderField called before comsumer call remote serve,
+// WriteTripleReqHeaderField called before comsumer call remote serve,
 // it parse field of url and ctx to HTTP2 Header field, developer must assure "tri-" prefix field be string
 // if not, it will cause panic!
 func (t *TripleHeaderHandler) WriteTripleReqHeaderField(header http.Header) http.Header {
