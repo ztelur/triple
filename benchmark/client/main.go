@@ -22,12 +22,12 @@ import (
 	"flag"
 	"fmt"
 	"github.com/apache/dubbo-go/common"
+	"github.com/apache/dubbo-go/common/logger"
 	"github.com/dubbogo/triple/benchmark/client/pkg"
 	pb "github.com/dubbogo/triple/benchmark/protobuf"
 	"github.com/dubbogo/triple/benchmark/stats"
 	"github.com/dubbogo/triple/internal/syscall"
 	"github.com/dubbogo/triple/pkg/triple"
-	"github.com/apache/dubbo-go/common/logger"
 	"os"
 	"runtime"
 	"runtime/pprof"
@@ -46,16 +46,15 @@ import (
 )
 
 const (
-	userName        = "username"
-	password        = "password"
-	loopbackAddress = "127.0.0.1"
+	userName                      = "username"
+	password                      = "password"
+	loopbackAddress               = "127.0.0.1"
 	referenceTestPath             = "com.test.Path"
 	referenceTestPathDistinct     = "com.test.Path1"
 	testInterfaceName             = "testService"
 	testProtocol                  = "testprotocol"
 	testSuiteMethodExpectedString = "interface {}"
 )
-
 
 var (
 	port      = flag.String("port", "50051", "Localhost port to connect to.")
@@ -77,9 +76,7 @@ var (
 	}
 	mu    sync.Mutex
 	hists []*stats.Histogram
-
 )
-
 
 var grpcGreeterImpl = new(pkg.GrpcGreeterImpl)
 
@@ -87,16 +84,14 @@ func init() {
 	config.SetConsumerService(grpcGreeterImpl)
 }
 
-
-func main()  {
+func main() {
 
 	config.Load()
 	time.Sleep(3 * time.Second)
 
-
 	BigDataReq := pb.BigData{
 		WantSize: 271828,
-		Data: make([]byte, 314159),
+		Data:     make([]byte, 314159),
 	}
 
 	warmDeadline := time.Now().Add(time.Duration(*warmupDur) * time.Second)
@@ -153,7 +148,7 @@ func runWithClient(ctx context.Context, in *pb.BigData, warmDeadline, endDeadlin
 				}
 
 				rsp, err := grpcGreeterImpl.BigUnaryTest(ctx, in)
-				if err != nil{
+				if err != nil {
 					fmt.Println("BigUnaryTest error")
 				} else {
 					fmt.Println("rsp len = ", len(rsp.Data))

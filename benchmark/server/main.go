@@ -37,11 +37,10 @@ import (
 	"time"
 )
 
-
 const (
-	userName        = "username"
-	password        = "password"
-	loopbackAddress = "127.0.0.1"
+	userName                      = "username"
+	password                      = "password"
+	loopbackAddress               = "127.0.0.1"
 	referenceTestPath             = "com.test.Path"
 	referenceTestPathDistinct     = "com.test.Path1"
 	testInterfaceName             = "testService"
@@ -49,15 +48,11 @@ const (
 	testSuiteMethodExpectedString = "interface {}"
 )
 
-
 var (
 	testName = flag.String("test_name", "server", "Name of the test used for creating profiles.")
-
 )
 
-func main()  {
-
-
+func main() {
 
 	flag.Parse()
 	if *testName == "" {
@@ -72,10 +67,8 @@ func main()  {
 	pprof.StartCPUProfile(cf)
 	cpuBeg := syscall.GetCPUTime()
 
-
 	config.SetProviderService(pkg.NewGreeterProvider())
 	config.Load()
-
 
 	ch := make(chan os.Signal, 1)
 	signal.Notify(ch, os.Interrupt)
@@ -95,5 +88,5 @@ func main()  {
 	fmt.Println("Server CPU utilization:", cpu)
 	fmt.Println("Server CPU profile:", cf.Name())
 	fmt.Println("Server Mem Profile:", mf.Name())
-	
+
 }
