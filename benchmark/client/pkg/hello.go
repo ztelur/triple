@@ -15,23 +15,24 @@
  * limitations under the License.
  */
 
-package main
+package pkg
 
 import (
 	"context"
-	"github.com/dubbogo/triple/benchmark/protobuf"
+	//_ "github.com/apache/dubbo-go/protocol/dubbo3/impl"
+	pb "github.com/dubbogo/triple/benchmark/protobuf"
 	dubbo3 "github.com/dubbogo/triple/pkg/triple"
 )
 
-
 type GrpcGreeterImpl struct {
-	SayHello func(ctx context.Context, in *protobuf.HelloRequest, out *protobuf.HelloReply) error
+	Dubbo3SayHello2 func(ctx context.Context, in *pb.Dubbo3HelloRequest, out *pb.Dubbo3HelloReply) error
+	BigUnaryTest func(ctx context.Context, in*pb.BigData) (*pb.BigData,error)
 }
 
 func (u *GrpcGreeterImpl) Reference() string {
 	return "GrpcGreeterImpl"
 }
 
-func (u *GrpcGreeterImpl) GetDubboStub(cc *dubbo3.TripleConn) protobuf.GreeterClient {
-	return protobuf.NewGreeterDubbo3Client(cc)
+func (u *GrpcGreeterImpl) GetDubboStub(cc *dubbo3.TripleConn) pb.Dubbo3GreeterClient {
+	return pb.NewDubbo3GreeterDubbo3Client(cc)
 }

@@ -174,7 +174,15 @@ done
 # Build server and client
 out_dir=$(mktemp -d oss_benchXXX)
 
-go build -o ${out_dir}/server /Users/gbc/Work/go/lizhix/triple/benchmark/server/main.go && go build -o ${out_dir}/client /Users/gbc/Work/go/lizhix/triple/benchmark/client/main.go
+
+export CONF_PROVIDER_FILE_PATH="/Users/gbc/Work/go/lizhix/triple/benchmark/server/conf/server.yml"
+export CONF_CONSUMER_FILE_PATH="/Users/gbc/Work/go/lizhix/triple/benchmark/client/conf/client.yml"
+
+go build -o ${out_dir}/server /Users/gbc/Work/go/lizhix/triple/benchmark/server/main.go
+
+
+go build -o ${out_dir}/client /Users/gbc/Work/go/lizhix/triple/benchmark/client/main.go
+
 if [ $? != 0 ]; then
   clean_and_die 1
 fi

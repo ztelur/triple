@@ -22,19 +22,27 @@ import (
 	"flag"
 	"fmt"
 	"github.com/apache/dubbo-go/common"
-	"github.com/apache/dubbo-go/config"
-	"github.com/dubbogo/triple/benchmark/protobuf"
+	"github.com/dubbogo/triple/benchmark/client/pkg"
+	pb "github.com/dubbogo/triple/benchmark/protobuf"
 	"github.com/dubbogo/triple/benchmark/stats"
 	"github.com/dubbogo/triple/internal/syscall"
 	"github.com/dubbogo/triple/pkg/triple"
 	"github.com/apache/dubbo-go/common/logger"
-	"net/url"
 	"os"
-	"reflect"
 	"runtime"
 	"runtime/pprof"
 	"sync"
 	"time"
+
+	_ "github.com/apache/dubbo-go/cluster/cluster_impl"
+	_ "github.com/apache/dubbo-go/cluster/loadbalance"
+	_ "github.com/apache/dubbo-go/common/proxy/proxy_factory"
+	"github.com/apache/dubbo-go/config"
+	_ "github.com/apache/dubbo-go/filter/filter_impl"
+	_ "github.com/apache/dubbo-go/protocol/dubbo3"
+	_ "github.com/apache/dubbo-go/protocol/grpc"
+	_ "github.com/apache/dubbo-go/registry/protocol"
+	_ "github.com/apache/dubbo-go/registry/zookeeper"
 )
 
 const (
@@ -61,7 +69,7 @@ var (
 		`Configure different client rpc type. Valid options are:
 		   unary;
 		   streaming.`)
-	testName = flag.String("test_name", "", "Name of the test used for creating profiles.")
+	testName = flag.String("test_name", "client", "Name of the test used for creating profiles.")
 	wg       sync.WaitGroup
 	hopts    = stats.HistogramOptions{
 		NumBuckets:   2495,
@@ -72,7 +80,8 @@ var (
 
 )
 
-var grpcGreeterImpl = new(GrpcGreeterImpl)
+
+var grpcGreeterImpl = new(pkg.GrpcGreeterImpl)
 
 func init() {
 	config.SetConsumerService(grpcGreeterImpl)
@@ -81,32 +90,14 @@ func init() {
 
 func main()  {
 
-	methods := []string{"SayHello"}
-	params := url.Values{}
-	params.Set("bean.name", "GrpcGreeterImpl")
-	url := common.NewURLWithOptions(common.WithPath("GrpcGreeterImpl"),
-		common.WithUsername(userName),
-		common.WithPassword(password),
-		common.WithProtocol("dubbo3"),
-		common.WithIp(loopbackAddress),
-		common.WithPort(*port),
-		common.WithMethods(methods),
-		common.WithParams(params),
-		common.WithParamsValue("key2", "value2"))
+	config.Load()
+	time.Sleep(3 * time.Second)
 
 
-	connectCtx, connectCancel := context.WithDeadline(context.Background(), time.Now().Add(5*time.Second))
-	defer connectCancel()
-
-
-	req := &protobuf.HelloRequest{Name: "zzz"}
-
-	in := make([]reflect.Value, 0, 16)
-	in = append(in, reflect.ValueOf(connectCtx))
-	in = append(in, reflect.ValueOf(req))
-
-
-	ctl := buildClients(url, connectCtx)
+	BigDataReq := pb.BigData{
+		WantSize: 271828,
+		Data: make([]byte, 314159),
+	}
 
 	warmDeadline := time.Now().Add(time.Duration(*warmupDur) * time.Second)
 	endDeadline := warmDeadline.Add(time.Duration(*duration) * time.Second)
@@ -118,9 +109,9 @@ func main()  {
 	pprof.StartCPUProfile(cf)
 	cpuBeg := syscall.GetCPUTime()
 
-	for _, ct := range ctl {
-		runWithClient(ct, "SayHello",  in, warmDeadline, endDeadline)
-	}
+	ctx := context.Background()
+	ctx = context.WithValue(ctx, "tri-req-id", "test_value_XXXXXXXX")
+	runWithClient(ctx, &BigDataReq, warmDeadline, endDeadline)
 
 	wg.Wait()
 	cpu := time.Duration(syscall.GetCPUTime() - cpuBeg)
@@ -145,7 +136,7 @@ func main()  {
 
 }
 
-func runWithClient(ct *triple.TripleClient, methodName string,  param []reflect.Value, warmDeadline, endDeadline time.Time) {
+func runWithClient(ctx context.Context, in *pb.BigData, warmDeadline, endDeadline time.Time) {
 	for i := 0; i < *numRPC; i++ {
 		wg.Add(1)
 		go func() {
@@ -160,11 +151,12 @@ func runWithClient(ct *triple.TripleClient, methodName string,  param []reflect.
 					mu.Unlock()
 					return
 				}
-				method := ct.Invoker.MethodByName(methodName)
-				res := method.Call(param)
-				// check err
-				if !res[1].IsNil() {
-					logger.Error("call failed: %v", res[1])
+
+				rsp, err := grpcGreeterImpl.BigUnaryTest(ctx, in)
+				if err != nil{
+					fmt.Println("BigUnaryTest error")
+				} else {
+					fmt.Println("rsp len = ", len(rsp.Data))
 				}
 				elapsed := time.Since(start)
 				if start.After(warmDeadline) {
