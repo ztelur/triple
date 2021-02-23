@@ -65,11 +65,11 @@ run(){
     port=$((${base_port}+${delta}))
 
     # Launch the server in background
-    ${out_dir}/server --port=${port} --test_name="Server_"${test_name}&
+    ${out_dir}/server --test_name="Server_"${test_name}&
     server_pid=$(echo $!)
 
     # Launch the client
-    ${out_dir}/client --port=${port} --d=${dur} --w=${warmup} --r=${nr} --c=${nc} --req=${req_sz} --resp=${resp_sz} --rpc_type=${r_type}  --test_name="client_"${test_name}
+    ${out_dir}/client --d=${dur} --w=${warmup} --r=${nr} --c=${nc} --req=${req_sz} --resp=${resp_sz} --rpc_type=${r_type}  --test_name="client_"${test_name}
     client_status=$(echo $?)
 
     kill -INT ${server_pid}

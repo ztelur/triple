@@ -51,7 +51,9 @@ func NewTripleServer(url *common.URL, service common.RPCService) *TripleServer {
 
 // Stop
 func (t *TripleServer) Stop() {
-	t.h2Controller.close()
+	if t.h2Controller != nil {
+		t.h2Controller.close()
+	}
 	t.closeChain <- struct{}{}
 }
 

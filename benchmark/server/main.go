@@ -20,6 +20,7 @@ package main
 import (
 	"flag"
 	"fmt"
+	"github.com/apache/dubbo-go/common/extension"
 	"github.com/apache/dubbo-go/common/logger"
 	_ "github.com/apache/dubbo-go/common/proxy/proxy_factory"
 	"github.com/apache/dubbo-go/config"
@@ -28,12 +29,13 @@ import (
 	_ "github.com/apache/dubbo-go/registry/protocol"
 	_ "github.com/apache/dubbo-go/registry/zookeeper"
 	"github.com/dubbogo/triple/benchmark/server/pkg"
-	"github.com/dubbogo/triple/internal/syscall"
+	ts_call "github.com/dubbogo/triple/internal/syscall"
 	_ "github.com/dubbogo/triple/pkg/triple"
 	"os"
 	"os/signal"
 	"runtime"
 	"runtime/pprof"
+	"syscall"
 	"time"
 )
 
@@ -50,6 +52,7 @@ const (
 
 var (
 	testName = flag.String("test_name", "server", "Name of the test used for creating profiles.")
+	survivalTimeout = int(3 * time.Second)
 )
 
 func main() {
@@ -65,28 +68,77 @@ func main() {
 	}
 	defer cf.Close()
 	pprof.StartCPUProfile(cf)
-	cpuBeg := syscall.GetCPUTime()
+	cpuBeg := ts_call.GetCPUTime()
 
 	config.SetProviderService(pkg.NewGreeterProvider())
 	config.Load()
 
-	ch := make(chan os.Signal, 1)
-	signal.Notify(ch, os.Interrupt)
-	<-ch
-	cpu := time.Duration(syscall.GetCPUTime() - cpuBeg)
 
-	pprof.StopCPUProfile()
-	mf, err := os.Create("/tmp/" + *testName + ".mem")
-	if err != nil {
-		logger.Error("Failed to create file: %v", err)
-	}
-	defer mf.Close()
-	runtime.GC() // materialize all statistics
-	if err := pprof.WriteHeapProfile(mf); err != nil {
-		logger.Error("Failed to write memory profile: %v", err)
-	}
-	fmt.Println("Server CPU utilization:", cpu)
-	fmt.Println("Server CPU profile:", cf.Name())
-	fmt.Println("Server Mem Profile:", mf.Name())
+	logger.Info("config.Load")
 
+
+	extension.AddCustomShutdownCallback(func() {
+		logger.Info("con12312312fig.Load")
+		time.Sleep(time.Second * 10)
+	})
+
+	signals := make(chan os.Signal, 1)
+	// It is not possible to block SIGKILL or syscall.SIGSTOP
+	signal.Notify(signals, os.Interrupt, os.Kill, syscall.SIGHUP, syscall.SIGQUIT, syscall.SIGTERM, syscall.SIGINT)
+	for {
+		sig := <-signals
+		logger.Infof("get signal %s", sig.String())
+		switch sig {
+		case syscall.SIGHUP:
+			// reload()
+			logger.Infof("2222get signal %s", sig.String())
+
+			cpu := time.Duration(ts_call.GetCPUTime() - cpuBeg)
+			pprof.StopCPUProfile()
+			mf, err := os.Create("/tmp/" + *testName + ".mem")
+			if err != nil {
+				logger.Error("Failed to create file: %v", err)
+			}
+			defer mf.Close()
+			runtime.GC() // materialize all statistics
+			if err := pprof.WriteHeapProfile(mf); err != nil {
+				logger.Error("Failed to write memory profile: %v", err)
+			}
+			fmt.Println("Server CPU utilization:", cpu)
+			fmt.Println("Server CPU profile:", cf.Name())
+			fmt.Println("Server Mem Profile:", mf.Name())
+		default:
+			logger.Infof("1111get signal %s", sig.String())
+
+			cpu := time.Duration(ts_call.GetCPUTime() - cpuBeg)
+			logger.Infof("1444get signal %s", sig.String())
+
+			pprof.StopCPUProfile()
+			logger.Infof("13333get signal %s", sig.String())
+
+			mf, err := os.Create("/tmp/" + *testName + ".mem")
+			if err != nil {
+				logger.Error("Failed to create file: %v", err)
+			}
+			logger.Infof("555 signal %s", sig.String())
+			defer mf.Close()
+			runtime.GC() // materialize all statistics
+			if err := pprof.WriteHeapProfile(mf); err != nil {
+				logger.Error("Failed to write memory profile: %v", err)
+			}
+			fmt.Println("Server CPU utilization:", cpu)
+			fmt.Println("Server CPU profile:", cf.Name())
+			fmt.Println("Server Mem Profile:", mf.Name())
+
+			time.Sleep(time.Second * 5)
+			time.AfterFunc(time.Duration(survivalTimeout), func() {
+				logger.Warnf("app exit now by force...")
+				os.Exit(1)
+			})
+
+			// The program exits normally or timeout forcibly exits.
+			fmt.Println("provider app exit now...")
+			return
+		}
+	}
 }

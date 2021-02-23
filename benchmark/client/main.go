@@ -57,14 +57,13 @@ const (
 )
 
 var (
-	port      = flag.String("port", "50051", "Localhost port to connect to.")
-	numRPC    = flag.Int("r", 1, "The number of concurrent RPCs on each connection.")
-	numConn   = flag.Int("c", 1, "The number of parallel connections.")
+	numRPC    = flag.Int("r", 10, "The number of concurrent RPCs on each connection.")
+	numConn   = flag.Int("c", 10, "The number of parallel connections.")
 	warmupDur = flag.Int("w", 10, "Warm-up duration in seconds")
 	duration  = flag.Int("d", 60, "Benchmark duration in seconds")
-	rqSize    = flag.Int("req", 1, "Request message size in bytes.")
-	rspSize   = flag.Int("resp", 1, "Response message size in bytes.")
-	rpcType   = flag.String("rpc_type", "unary",
+	rqSize    = flag.Int("req", 30, "Request message size in bytes.")
+	rspSize   = flag.Int("resp", 30, "Response message size in bytes.")
+	rpcType   = flag.String("rpc_type", "streaming",
 		`Configure different client rpc type. Valid options are:
 		   unary;
 		   streaming.`)
@@ -90,8 +89,8 @@ func main() {
 	time.Sleep(3 * time.Second)
 
 	BigDataReq := pb.BigData{
-		WantSize: 271828,
-		Data:     make([]byte, 314159),
+		WantSize: int32(*rspSize),
+		Data:     make([]byte, *rqSize),
 	}
 
 	warmDeadline := time.Now().Add(time.Duration(*warmupDur) * time.Second)
@@ -132,11 +131,13 @@ func main() {
 }
 
 func runWithClient(ctx context.Context, in *pb.BigData, warmDeadline, endDeadline time.Time) {
-	for i := 0; i < *numRPC; i++ {
+
+	for i := 0; i < *numConn; i++ {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
 
+			caller := makeCaller(in)
 			hist := stats.NewHistogram(hopts)
 			for {
 				start := time.Now()
@@ -147,12 +148,14 @@ func runWithClient(ctx context.Context, in *pb.BigData, warmDeadline, endDeadlin
 					return
 				}
 
-				rsp, err := grpcGreeterImpl.BigUnaryTest(ctx, in)
-				if err != nil {
-					fmt.Println("BigUnaryTest error")
+				if *rpcType == "unary" {
+					caller()
 				} else {
-					fmt.Println("rsp len = ", len(rsp.Data))
+					for j := 0; j < * numRPC; j++ {
+						caller()
+					}
 				}
+
 				elapsed := time.Since(start)
 				if start.After(warmDeadline) {
 					hist.Add(elapsed.Nanoseconds())
@@ -161,6 +164,33 @@ func runWithClient(ctx context.Context, in *pb.BigData, warmDeadline, endDeadlin
 		}()
 	}
 }
+
+func makeCaller(in *pb.BigData) func() {
+	if *rpcType == "unary" {
+		return func() {
+			if _, err := grpcGreeterImpl.BigUnaryTest(context.Background(), in); err != nil {
+				logger.Info("RPC failed: %v", err)
+			}
+		}
+	}
+
+	stream, err := grpcGreeterImpl.BigStreamTest(context.Background())
+	if err != nil {
+		logger.Errorf("RPC failed: %v", err)
+	}
+	return func() {
+
+		if err := stream.Send(in); err != nil {
+			logger.Errorf("Streaming RPC failed to send: %v", err)
+		}
+		if _, err := stream.Recv(); err != nil {
+			logger.Errorf("Streaming RPC failed to read: %v", err)
+		}
+	}
+}
+
+
+
 func buildClients(url *common.URL, ctx context.Context) []*triple.TripleClient {
 	ccs := make([]*triple.TripleClient, *numConn)
 
