@@ -1,7 +1,7 @@
 
 ### dubbo-go triple benchmark
 
-like grpc-go benchmark
+derived from grpc-go benchmark
 
 
 ```
