@@ -16,6 +16,8 @@ rpc_types=(unary)
 idx=(0 0 0 0 0)
 idx_max=(1 1 1 1 1)
 
+
+
 inc()
 {
   for i in $(seq $((${#idx[@]}-1)) -1 0); do
@@ -64,14 +66,17 @@ run(){
   do
     port=$((${base_port}+${delta}))
 
-    # Launch the server in background
+    echo "Launch the server in background"
     ${out_dir}/server --test_name="Server_"${test_name}&
     server_pid=$(echo $!)
 
-    # Launch the client
+    # sleep for server start completely
+    sleep 5s
+    echo "Launch the client"
+
     ${out_dir}/client --d=${dur} --w=${warmup} --r=${nr} --c=${nc} --req=${req_sz} --resp=${resp_sz} --rpc_type=${r_type}  --test_name="client_"${test_name}
     client_status=$(echo $?)
-
+    echo "finish and kill server"
     kill -INT ${server_pid}
     wait ${server_pid}
 
@@ -79,6 +84,7 @@ run(){
       break
     fi
 
+    echo "go to next loop"
     delta=$((${delta}+1))
     if [ ${delta} == 10 ]; then
       echo "Continuous 10 failed runs. Exiting now."
@@ -157,10 +163,10 @@ while [ $# -gt 0 ]; do
       echo ""
       echo "Each of the following can have multiple comma separated values."
       echo ""
-      echo "-r                number of RPCs, default value is 1"
-      echo "-c                number of Connections, default value is 1"
-      echo "-req              req size in bytes, default value is 1"
-      echo "-resp             resp size in bytes, default value is 1"
+      echo "-r                number of RPCs, default value is 10,only valid when rpc-type = streaming"
+      echo "-c                number of Connections, default value is 10"
+      echo "-req              req size in bytes, default value is 30"
+      echo "-resp             resp size in bytes, default value is 30"
       echo "-rpc_type         valid values are unary|streaming, default is unary"
       exit 0
       ;;
@@ -175,13 +181,15 @@ done
 out_dir=$(mktemp -d oss_benchXXX)
 
 
-export CONF_PROVIDER_FILE_PATH="/Users/gbc/Work/go/lizhix/triple/benchmark/server/conf/server.yml"
-export CONF_CONSUMER_FILE_PATH="/Users/gbc/Work/go/lizhix/triple/benchmark/client/conf/client.yml"
 
-go build -o ${out_dir}/server /Users/gbc/Work/go/lizhix/triple/benchmark/server/main.go
+BENCHMARK_FOLDER=$(cd "$(dirname "$0")";pwd)
 
+export CONF_PROVIDER_FILE_PATH=${BENCHMARK_FOLDER}"/server/conf/server.yml"
+export CONF_CONSUMER_FILE_PATH=${BENCHMARK_FOLDER}"/client/conf/client.yml"
 
-go build -o ${out_dir}/client /Users/gbc/Work/go/lizhix/triple/benchmark/client/main.go
+echo ${CONF_PROVIDER_FILE_PATH}
+
+go build -o ${out_dir}/server /Users/gbc/Work/go/lizhix/triple/benchmark/server/main.go && go build -o ${out_dir}/client /Users/gbc/Work/go/lizhix/triple/benchmark/client/main.go
 
 if [ $? != 0 ]; then
   clean_and_die 1

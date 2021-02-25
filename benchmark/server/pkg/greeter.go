@@ -1,19 +1,19 @@
 /*
-Licensed to the Apache Software Foundation (ASF) under one or more
-contributor license agreements.  See the NOTICE file distributed with
-this work for additional information regarding copyright ownership.
-The ASF licenses this file to You under the Apache License, Version 2.0
-(the "License"); you may not use this file except in compliance with
-the License.  You may obtain a copy of the License at
-
-    http://www.apache.org/licenses/LICENSE-2.0
-
-Unless required by applicable law or agreed to in writing, software
-distributed under the License is distributed on an "AS IS" BASIS,
-WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-See the License for the specific language governing permissions and
-limitations under the License.
-*/
+ * Licensed to the Apache Software Foundation (ASF) under one or more
+ * contributor license agreements.  See the NOTICE file distributed with
+ * this work for additional information regarding copyright ownership.
+ * The ASF licenses this file to You under the Apache License, Version 2.0
+ * (the "License"); you may not use this file except in compliance with
+ * the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
 
 package pkg
 
@@ -33,31 +33,22 @@ func NewGreeterProvider() *GreeterProvider {
 	}
 }
 
-func (s *GreeterProvider) BigStreamTest(svr pb.Dubbo3Greeter_BigStreamTestServer) error{
+func (s *GreeterProvider) BigStreamTest(svr pb.Dubbo3Greeter_BigStreamTestServer) error {
 	c, err := svr.Recv()
 	if err != nil {
 		return err
 	}
 	fmt.Println("server server recv 1 = ", len(c.Data))
-	c2, err := svr.Recv()
-	if err != nil {
-		return err
-	}
-	fmt.Println("server server recv 2 = ", len(c2.Data))
-	c3, err := svr.Recv()
-	if err != nil {
-		return err
-	}
-	fmt.Println("server server recv 3 = ", len(c3.Data))
 
-	svr.Send(&pb.BigData{
-		Data: make([]byte, c.WantSize),
+	err = svr.Send(&pb.BigData{
+		Data:     make([]byte, c.WantSize),
 		WantSize: 0,
 	})
-	svr.Send(&pb.BigData{
-		Data: make([]byte, c2.WantSize),
-		WantSize: 0,
-	})
+
+	if err != nil {
+		fmt.Println("server Send error", len(c.Data))
+	}
+
 	return nil
 }
 
@@ -65,7 +56,7 @@ func (s *GreeterProvider) BigStreamTest(svr pb.Dubbo3Greeter_BigStreamTestServer
 func (s *GreeterProvider) Dubbo3SayHello2(ctx context.Context, in *pb.Dubbo3HelloRequest) (*pb.Dubbo3HelloReply, error) {
 	fmt.Println("######### get server request name :" + in.Myname)
 	fmt.Println("get tri-req-id = ", ctx.Value("tri-req-id"))
-	return &pb.Dubbo3HelloReply{Msg: "Hello " + in.Myname},nil
+	return &pb.Dubbo3HelloReply{Msg: "Hello " + in.Myname}, nil
 }
 
 // Dubbo3SayHello is a server rpc exmple
@@ -93,8 +84,8 @@ func (g *GreeterProvider) Dubbo3SayHello(svr pb.Dubbo3Greeter_Dubbo3SayHelloServ
 	fmt.Println("server server send 2 = ", c3.Myname)
 	return nil
 }
-func (s *GreeterProvider) BigUnaryTest(ctx context.Context , in *pb.BigData) (*pb.BigData, error){
-	fmt.Println("server unary recv len = ",  len(in.Data))
+func (s *GreeterProvider) BigUnaryTest(ctx context.Context, in *pb.BigData) (*pb.BigData, error) {
+	fmt.Println("server unary recv len = ", len(in.Data))
 	return &pb.BigData{
 		Data: make([]byte, in.WantSize),
 	}, nil

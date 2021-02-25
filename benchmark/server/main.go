@@ -39,19 +39,8 @@ import (
 	"time"
 )
 
-const (
-	userName                      = "username"
-	password                      = "password"
-	loopbackAddress               = "127.0.0.1"
-	referenceTestPath             = "com.test.Path"
-	referenceTestPathDistinct     = "com.test.Path1"
-	testInterfaceName             = "testService"
-	testProtocol                  = "testprotocol"
-	testSuiteMethodExpectedString = "interface {}"
-)
-
 var (
-	testName = flag.String("test_name", "server", "Name of the test used for creating profiles.")
+	testName        = flag.String("test_name", "server", "Name of the test used for creating profiles.")
 	survivalTimeout = int(3 * time.Second)
 )
 
@@ -73,12 +62,8 @@ func main() {
 	config.SetProviderService(pkg.NewGreeterProvider())
 	config.Load()
 
-
-	logger.Info("config.Load")
-
-
 	extension.AddCustomShutdownCallback(func() {
-		logger.Info("con12312312fig.Load")
+		logger.Info("wait for StopCPUProfile finish")
 		time.Sleep(time.Second * 10)
 	})
 
@@ -87,40 +72,16 @@ func main() {
 	signal.Notify(signals, os.Interrupt, os.Kill, syscall.SIGHUP, syscall.SIGQUIT, syscall.SIGTERM, syscall.SIGINT)
 	for {
 		sig := <-signals
-		logger.Infof("get signal %s", sig.String())
 		switch sig {
 		case syscall.SIGHUP:
 			// reload()
-			logger.Infof("2222get signal %s", sig.String())
-
-			cpu := time.Duration(ts_call.GetCPUTime() - cpuBeg)
-			pprof.StopCPUProfile()
-			mf, err := os.Create("/tmp/" + *testName + ".mem")
-			if err != nil {
-				logger.Error("Failed to create file: %v", err)
-			}
-			defer mf.Close()
-			runtime.GC() // materialize all statistics
-			if err := pprof.WriteHeapProfile(mf); err != nil {
-				logger.Error("Failed to write memory profile: %v", err)
-			}
-			fmt.Println("Server CPU utilization:", cpu)
-			fmt.Println("Server CPU profile:", cf.Name())
-			fmt.Println("Server Mem Profile:", mf.Name())
 		default:
-			logger.Infof("1111get signal %s", sig.String())
-
 			cpu := time.Duration(ts_call.GetCPUTime() - cpuBeg)
-			logger.Infof("1444get signal %s", sig.String())
-
 			pprof.StopCPUProfile()
-			logger.Infof("13333get signal %s", sig.String())
-
 			mf, err := os.Create("/tmp/" + *testName + ".mem")
 			if err != nil {
 				logger.Error("Failed to create file: %v", err)
 			}
-			logger.Infof("555 signal %s", sig.String())
 			defer mf.Close()
 			runtime.GC() // materialize all statistics
 			if err := pprof.WriteHeapProfile(mf); err != nil {
@@ -129,15 +90,6 @@ func main() {
 			fmt.Println("Server CPU utilization:", cpu)
 			fmt.Println("Server CPU profile:", cf.Name())
 			fmt.Println("Server Mem Profile:", mf.Name())
-
-			time.Sleep(time.Second * 5)
-			time.AfterFunc(time.Duration(survivalTimeout), func() {
-				logger.Warnf("app exit now by force...")
-				os.Exit(1)
-			})
-
-			// The program exits normally or timeout forcibly exits.
-			fmt.Println("provider app exit now...")
 			return
 		}
 	}

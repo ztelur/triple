@@ -45,17 +45,6 @@ import (
 	_ "github.com/apache/dubbo-go/registry/zookeeper"
 )
 
-const (
-	userName                      = "username"
-	password                      = "password"
-	loopbackAddress               = "127.0.0.1"
-	referenceTestPath             = "com.test.Path"
-	referenceTestPathDistinct     = "com.test.Path1"
-	testInterfaceName             = "testService"
-	testProtocol                  = "testprotocol"
-	testSuiteMethodExpectedString = "interface {}"
-)
-
 var (
 	numRPC    = flag.Int("r", 10, "The number of concurrent RPCs on each connection.")
 	numConn   = flag.Int("c", 10, "The number of parallel connections.")
@@ -63,7 +52,7 @@ var (
 	duration  = flag.Int("d", 60, "Benchmark duration in seconds")
 	rqSize    = flag.Int("req", 30, "Request message size in bytes.")
 	rspSize   = flag.Int("resp", 30, "Response message size in bytes.")
-	rpcType   = flag.String("rpc_type", "streaming",
+	rpcType   = flag.String("streaming", "unary",
 		`Configure different client rpc type. Valid options are:
 		   unary;
 		   streaming.`)
@@ -108,6 +97,7 @@ func main() {
 	runWithClient(ctx, &BigDataReq, warmDeadline, endDeadline)
 
 	wg.Wait()
+	fmt.Println("handle mem and cpu")
 	cpu := time.Duration(syscall.GetCPUTime() - cpuBeg)
 	pprof.StopCPUProfile()
 	mf, err := os.Create("/tmp/" + *testName + ".mem")
@@ -145,13 +135,14 @@ func runWithClient(ctx context.Context, in *pb.BigData, warmDeadline, endDeadlin
 					mu.Lock()
 					hists = append(hists, hist)
 					mu.Unlock()
+					logger.Info("finish one goroutine")
 					return
 				}
 
 				if *rpcType == "unary" {
 					caller()
 				} else {
-					for j := 0; j < * numRPC; j++ {
+					for j := 0; j < *numRPC; j++ {
 						caller()
 					}
 				}
@@ -168,8 +159,11 @@ func runWithClient(ctx context.Context, in *pb.BigData, warmDeadline, endDeadlin
 func makeCaller(in *pb.BigData) func() {
 	if *rpcType == "unary" {
 		return func() {
+			logger.Info("call RPC")
 			if _, err := grpcGreeterImpl.BigUnaryTest(context.Background(), in); err != nil {
 				logger.Info("RPC failed: %v", err)
+			} else {
+				logger.Info("RPC success")
 			}
 		}
 	}
@@ -188,8 +182,6 @@ func makeCaller(in *pb.BigData) func() {
 		}
 	}
 }
-
-
 
 func buildClients(url *common.URL, ctx context.Context) []*triple.TripleClient {
 	ccs := make([]*triple.TripleClient, *numConn)
