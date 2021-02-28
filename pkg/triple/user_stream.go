@@ -20,6 +20,7 @@ package triple
 import (
 	"context"
 	"errors"
+	"fmt"
 	"github.com/apache/dubbo-go/common/logger"
 	"google.golang.org/grpc/metadata"
 )
@@ -54,6 +55,7 @@ func (ss *baseUserStream) SendMsg(m interface{}) error {
 		return err
 	}
 	rspFrameData := ss.pkgHandler.Pkg2FrameData(replyData)
+	fmt.Println("sendMsg putSend!!!")
 	ss.stream.putSend(rspFrameData, DataMsgType)
 	return nil
 }

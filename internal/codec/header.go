@@ -19,12 +19,14 @@ package codec
 
 import (
 	"context"
+	h2 "golang.org/x/net/http2"
+	"net/http"
+	"net/textproto"
+	"strconv"
 )
 
 import (
 	dubboCommon "github.com/apache/dubbo-go/common"
-	"golang.org/x/net/http2"
-	"golang.org/x/net/http2/hpack"
 )
 
 import (
@@ -38,7 +40,7 @@ func init() {
 
 // TripleHeader define the h2 header of triple impl
 type TripleHeader struct {
-	Method         string
+	Path           string
 	StreamID       uint32
 	ContentType    string
 	ServiceVersion string
@@ -50,10 +52,11 @@ type TripleHeader struct {
 	ClusterInfo    string
 	GrpcStatus     string
 	GrpcMessage    string
+	Authorization  []string
 }
 
-func (t *TripleHeader) GetMethod() string {
-	return t.Method
+func (t *TripleHeader) GetPath() string {
+	return t.Path
 }
 func (t *TripleHeader) GetStreamID() uint32 {
 	return t.StreamID
@@ -70,40 +73,54 @@ func (t *TripleHeader) FieldToCtx() context.Context {
 	ctx = context.WithValue(ctx, "tri-unit-info", t.ClusterInfo)
 	ctx = context.WithValue(ctx, "grpc-status", t.GrpcStatus)
 	ctx = context.WithValue(ctx, "grpc-message", t.GrpcMessage)
-
+	ctx = context.WithValue(ctx, "authorization", t.Authorization)
 	return ctx
 }
 
-func NewTripleHeaderHandler() common.ProtocolHeaderHandler {
-	return &TripleHeaderHandler{}
+func NewTripleHeaderHandler(url *dubboCommon.URL, ctx context.Context) common.ProtocolHeaderHandler {
+	return &TripleHeaderHandler{
+		Url: url,
+		Ctx: ctx,
+	}
 }
 
 // TripleHeaderHandler Handler the change of triple header field and h2 field
 type TripleHeaderHandler struct {
+	Url *dubboCommon.URL
+	Ctx context.Context
 }
 
-// WriteHeaderField called before comsumer call remote serve,
+// WriteTripleReqHeaderField called before comsumer call remote serve,
 // it parse field of url and ctx to HTTP2 Header field, developer must assure "tri-" prefix field be string
 // if not, it will cause panic!
-func (t TripleHeaderHandler) WriteHeaderField(url *dubboCommon.URL, ctx context.Context, headerFields []hpack.HeaderField) []hpack.HeaderField {
-	if headerFields == nil {
-		headerFields = make([]hpack.HeaderField, 0, 8)
+func (t *TripleHeaderHandler) WriteTripleReqHeaderField(header http.Header) http.Header {
+	//header[":method"] = []string{"POST"}
+	//header[":scheme"] = []string{"https"}
+	//header[":path"] = []string{t.Url.GetParam(":path", "")} //
+	//header[":authority"] = []string{t.Url.Location}
+	//header["content-type"] = []string{t.Url.GetParam("content-type", "application/grpc")}
+	header["user-agent"] = []string{"grpc-go/1.35.0-dev"}
+	header["tri-service-version"] = []string{getCtxVaSave(t.Ctx, "tri-service-version")}
+	header["tri-service-group"] = []string{getCtxVaSave(t.Ctx, "tri-service-group")}
+	header["tri-req-id"] = []string{getCtxVaSave(t.Ctx, "tri-req-id")}
+	header["tri-trace-traceid"] = []string{getCtxVaSave(t.Ctx, "tri-trace-traceid")}
+	header["tri-trace-rpcid"] = []string{getCtxVaSave(t.Ctx, "tri-trace-rpcid")}
+	header["tri-trace-proto-bin"] = []string{getCtxVaSave(t.Ctx, "tri-trace-proto-bin")}
+	header["tri-unit-info"] = []string{getCtxVaSave(t.Ctx, "tri-unit-info")}
+	if v, ok := t.Ctx.Value("authorization").([]string); !ok || len(v) != 2 {
+		return header
+	} else {
+		header["authorization"] = v
 	}
 
-	headerFields = append(headerFields, hpack.HeaderField{Name: ":method", Value: "POST"})
-	headerFields = append(headerFields, hpack.HeaderField{Name: ":scheme", Value: "http"})
-	headerFields = append(headerFields, hpack.HeaderField{Name: ":path", Value: url.GetParam(":path", "")}) // added when invoke, parse grpc 'method' to :path
-	headerFields = append(headerFields, hpack.HeaderField{Name: ":authority", Value: url.Location})
-	headerFields = append(headerFields, hpack.HeaderField{Name: "content-type", Value: url.GetParam("content-type", "application/grpc")})
-	headerFields = append(headerFields, hpack.HeaderField{Name: "user-agent", Value: "grpc-go/1.35.0-dev"})
-	headerFields = append(headerFields, hpack.HeaderField{Name: "tri-service-version", Value: getCtxVaSave(ctx, "tri-service-version")})
-	headerFields = append(headerFields, hpack.HeaderField{Name: "tri-service-group", Value: getCtxVaSave(ctx, "tri-service-group")})
-	headerFields = append(headerFields, hpack.HeaderField{Name: "tri-req-id", Value: getCtxVaSave(ctx, "tri-req-id")})
-	headerFields = append(headerFields, hpack.HeaderField{Name: "tri-trace-traceid", Value: getCtxVaSave(ctx, "tri-trace-traceid")})
-	headerFields = append(headerFields, hpack.HeaderField{Name: "tri-trace-rpcid", Value: getCtxVaSave(ctx, "tri-trace-rpcid")})
-	headerFields = append(headerFields, hpack.HeaderField{Name: "tri-trace-proto-bin", Value: getCtxVaSave(ctx, "tri-trace-proto-bin")})
-	headerFields = append(headerFields, hpack.HeaderField{Name: "tri-unit-info", Value: getCtxVaSave(ctx, "tri-unit-info")})
-	return headerFields
+	return header
+}
+
+func (t *TripleHeaderHandler) WriteTripleFinalRspHeaderField(w http.ResponseWriter) {
+	w.Header().Add("content-type", "application/grpc+proto")
+	w.Header().Add(h2.TrailerPrefix+"grpc-status", strconv.Itoa(int(0)))     // sendMsg.st.Code()
+	w.Header().Add(h2.TrailerPrefix+"grpc-message", "")                      //encodeGrpcMessage(""))
+	w.Header().Add(h2.TrailerPrefix+"trace-proto-bin", strconv.Itoa(int(0))) // sendMsg.st.Code()
 }
 
 func getCtxVaSave(ctx context.Context, field string) string {
@@ -115,41 +132,36 @@ func getCtxVaSave(ctx context.Context, field string) string {
 }
 
 // ReadFromH2MetaHeader read meta header field from h2 header, and parse it to ProtocolHeader as user defined
-func (t TripleHeaderHandler) ReadFromH2MetaHeader(frame *http2.MetaHeadersFrame) common.ProtocolHeader {
-	tripleHeader := &TripleHeader{
-		StreamID: frame.StreamID,
-	}
-	for _, f := range frame.Fields {
-		switch f.Name {
-		case "tri-service-version":
-			tripleHeader.ServiceVersion = f.Value
-		case "tri-service-group":
-			tripleHeader.ServiceGroup = f.Value
-		case "tri-req-id":
-			tripleHeader.RPCID = f.Value
-		case "tri-trace-traceid":
-			tripleHeader.TracingID = f.Value
-		case "tri-trace-rpcid":
-			tripleHeader.TracingRPCID = f.Value
-		case "tri-trace-proto-bin":
-			tripleHeader.TracingContext = f.Value
-		case "tri-unit-info":
-			tripleHeader.ClusterInfo = f.Value
-		case "content-type":
-			tripleHeader.ContentType = f.Value
-		case ":path":
-			tripleHeader.Method = f.Value
+func (t *TripleHeaderHandler) ReadFromTripleReqHeader(r *http.Request) common.ProtocolHeader {
+	tripleHeader := &TripleHeader{}
+	header := r.Header
+	tripleHeader.Path = r.URL.Path
+	for k, v := range header {
+		switch k {
+		case textproto.CanonicalMIMEHeaderKey("tri-service-version"):
+			tripleHeader.ServiceVersion = v[0]
+		case textproto.CanonicalMIMEHeaderKey("tri-service-group"):
+			tripleHeader.ServiceGroup = v[0]
+		case textproto.CanonicalMIMEHeaderKey("tri-req-id"):
+			tripleHeader.RPCID = v[0]
+		case textproto.CanonicalMIMEHeaderKey("tri-trace-traceid"):
+			tripleHeader.TracingID = v[0]
+		case textproto.CanonicalMIMEHeaderKey("tri-trace-rpcid"):
+			tripleHeader.TracingRPCID = v[0]
+		case textproto.CanonicalMIMEHeaderKey("tri-trace-proto-bin"):
+			tripleHeader.TracingContext = v[0]
+		case textproto.CanonicalMIMEHeaderKey("tri-unit-info"):
+			tripleHeader.ClusterInfo = v[0]
+		case textproto.CanonicalMIMEHeaderKey("content-type"):
+			tripleHeader.ContentType = v[0]
+		case textproto.CanonicalMIMEHeaderKey("authorization"):
+			tripleHeader.ContentType = v[0]
 		// todo: usage of these part of fields needs to be discussed later
 		//case "grpc-encoding":
-		case "grpc-status":
-			tripleHeader.GrpcStatus = f.Value
-		case "grpc-message":
-			tripleHeader.GrpcMessage = f.Value
-		//case "grpc-status-details-bin":
-		//case "grpc-timeout":
-		//case ":status":
-		//case "grpc-tags-bin":
-		//case "grpc-trace-bin":
+		//case "grpc-status":
+		//	tripleHeader.GrpcStatus = v[0]
+		//case "grpc-message":
+		//	tripleHeader.GrpcMessage = v[0]
 		default:
 		}
 	}

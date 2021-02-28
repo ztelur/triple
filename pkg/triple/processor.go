@@ -22,7 +22,6 @@ import (
 	"errors"
 )
 import (
-	dubboCommon "github.com/apache/dubbo-go/common"
 	"github.com/apache/dubbo-go/common/logger"
 	"github.com/golang/protobuf/proto"
 	"google.golang.org/grpc"
@@ -88,7 +87,7 @@ func newUnaryProcessor(s *serverStream, pkgHandler common.PackageHandler, desc g
 }
 
 // processUnaryRPC can process unary rpc
-func (p *unaryProcessor) processUnaryRPC(buf bytes.Buffer, service dubboCommon.RPCService, header common.ProtocolHeader) ([]byte, error) {
+func (p *unaryProcessor) processUnaryRPC(buf bytes.Buffer, service Dubbo3GrpcService, header common.ProtocolHeader) ([]byte, error) {
 	readBuf := buf.Bytes()
 
 	pkgData, _ := p.pkgHandler.Frame2PkgData(readBuf)
@@ -145,6 +144,7 @@ func (s *unaryProcessor) runRPC() {
 				// it's enough that unary processor just send data msg to stream layer
 				// rpc status logic just let stream layer to handle
 				s.stream.putSend(rspData, DataMsgType)
+				s.stream.putSend(nil, ServerStreamCloseMsgType)
 			}()
 		}
 	}()
